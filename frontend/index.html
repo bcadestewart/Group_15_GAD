@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GAD - Geospatial Architecture Database</title>
+    <link rel="stylesheet" href="/styles.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="app-container">
+        <header class="glass-header">
+            <div class="logo">
+                <span class="icon">🌍</span>
+                <div class="logo-text">
+                    <h1>GAD</h1>
+                    <p>Geospatial Architecture Database</p>
+                </div>
+            </div>
+            <button id="exportBtn" class="btn-primary" style="display:none;">↓ Export CSV</button>
+        </header>
+        
+        <main class="main-content">
+            <aside class="sidebar glass-panel">
+                <div class="search-box">
+                    <label for="locationInput">Search Location</label>
+                    <input type="text" id="locationInput" placeholder="Enter address or coordinates...">
+                    <div id="suggestions" class="suggestions-dropdown hidden"></div>
+                </div>
+                
+                <div id="sidebarContent">
+                    <div class="empty-state">
+                        <span class="icon" style="font-size:3rem;opacity:0.25;">📍</span>
+                        <p style="color:var(--text-secondary);font-size:0.9rem;text-align:center;margin-top:1rem;">Search for a location to see weather history and construction recommendations.</p>
+                    </div>
+                </div>
+            </aside>
+            
+            <section class="dashboard">
+                <div class="map-container glass-panel" style="padding:0; overflow:hidden;">
+                    <iframe id="googleMap" width="100%" height="100%" style="border:0;" allowfullscreen="" loading="lazy"></iframe>
+                    <div id="mapOverlay" class="map-overlay">
+                        <div class="spinner"></div>
+                        <p>Analyzing location...</p>
+                    </div>
+                </div>
+                
+                <div class="data-tabs glass-panel" style="display:none;" id="dataPanel">
+                    <div class="tab-buttons">
+                        <button class="tab-btn active" data-tab="overview">Overview</button>
+                        <button class="tab-btn" data-tab="forecast">Forecast</button>
+                        <button class="tab-btn" data-tab="alerts">Alerts <span id="alertCount"></span></button>
+                        <button class="tab-btn" data-tab="recommendations">Build Tips</button>
+                    </div>
+                    <div class="tab-content-container">
+                        <div id="overview" class="tab-content active"></div>
+                        <div id="forecast" class="tab-content"></div>
+                        <div id="alerts" class="tab-content"></div>
+                        <div id="recommendations" class="tab-content"></div>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+    <script src="/app.js"></script>
+</body>
+</html>
