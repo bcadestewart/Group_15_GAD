@@ -3,65 +3,205 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>GAD - Geospatial Architecture Database</title>
+    <title>GAD — Geospatial Architecture Database</title>
     <link rel="stylesheet" href="/styles.css">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
 </head>
 <body>
+    <!-- Skip link for keyboard users -->
+    <a href="#main" class="skip-link">Skip to main content</a>
+
+    <!-- Offline banner -->
+    <div id="offlineBanner" class="offline-banner" role="status" aria-live="polite" hidden>
+        <span aria-hidden="true">⚠</span>
+        <span>You are offline. Reconnecting will resume any pending requests.</span>
+    </div>
+
     <div class="app-container">
-        <header class="glass-header">
+        <!-- ─── HEADER ─── -->
+        <header class="glass-header" role="banner">
             <div class="logo">
-                <span class="icon">🌍</span>
+                <svg width="28" height="28" viewBox="0 0 28 28" fill="none" aria-hidden="true">
+                    <path d="M14 2L26 8v12l-12 6L2 20V8l12-6z" stroke="#60a5fa" stroke-width="1.5" fill="rgba(96,165,250,0.08)"/>
+                    <circle cx="14" cy="14" r="4" fill="#60a5fa" opacity="0.7"/>
+                    <path d="M14 6v4M14 18v4M6 14h4M18 14h4" stroke="#60a5fa" stroke-width="1" opacity="0.4"/>
+                </svg>
                 <div class="logo-text">
                     <h1>GAD</h1>
                     <p>Geospatial Architecture Database</p>
                 </div>
             </div>
-            <button id="exportBtn" class="btn-primary" style="display:none;">↓ Export CSV</button>
+            <div class="header-actions">
+                <button id="compareBtn" class="btn-ghost" hidden aria-label="Open comparison panel">
+                    <span aria-hidden="true">⇄</span>
+                    <span>Compare <span id="compareCount">0</span></span>
+                </button>
+                <button id="exportBtn" class="btn-primary" hidden aria-label="Export site report">
+                    <span aria-hidden="true">↓</span> Export Report
+                </button>
+            </div>
         </header>
-        
-        <main class="main-content">
-            <aside class="sidebar glass-panel">
+
+        <!-- ─── MAIN ─── -->
+        <main id="main" class="main-content" role="main">
+            <!-- ─── SIDEBAR ─── -->
+            <aside class="sidebar glass-panel" aria-label="Search and location summary">
                 <div class="search-box">
-                    <label for="locationInput">Search Location</label>
-                    <input type="text" id="locationInput" placeholder="Enter address or coordinates...">
-                    <div id="suggestions" class="suggestions-dropdown hidden"></div>
-                </div>
-                
-                <div id="sidebarContent">
-                    <div class="empty-state">
-                        <span class="icon" style="font-size:3rem;opacity:0.25;">📍</span>
-                        <p style="color:var(--text-secondary);font-size:0.9rem;text-align:center;margin-top:1rem;">Search for a location to see weather history and construction recommendations.</p>
+                    <label for="locationInput" id="locationLabel">Search Location</label>
+                    <div class="input-wrap">
+                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                            <circle cx="7" cy="7" r="5.5" stroke="currentColor" stroke-width="1.5"/>
+                            <path d="M11 11l3.5 3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                        </svg>
+                        <input
+                            type="text" id="locationInput"
+                            placeholder="Address, city, or coordinates…"
+                            autocomplete="off"
+                            role="combobox"
+                            aria-controls="suggestions"
+                            aria-expanded="false"
+                            aria-autocomplete="list"
+                            aria-activedescendant="">
                     </div>
+                    <div id="suggestions" class="suggestions-dropdown hidden" role="listbox" aria-label="Location suggestions"></div>
+                    <p class="hint">Press <kbd>↑</kbd>/<kbd>↓</kbd> to navigate · <kbd>Enter</kbd> to select · or click the map</p>
+                </div>
+
+                <!-- Suggested cities (empty state) -->
+                <div id="suggestedCities" class="suggested-cities">
+                    <p class="section-label">Try a city</p>
+                    <div class="chip-row" role="list">
+                        <button class="chip" role="listitem" data-lat="27.9506" data-lon="-82.4572" data-name="Tampa, FL">Tampa, FL</button>
+                        <button class="chip" role="listitem" data-lat="35.4676" data-lon="-97.5164" data-name="Oklahoma City, OK">Oklahoma City</button>
+                        <button class="chip" role="listitem" data-lat="34.0522" data-lon="-118.2437" data-name="Los Angeles, CA">Los Angeles</button>
+                        <button class="chip" role="listitem" data-lat="33.4484" data-lon="-112.0740" data-name="Phoenix, AZ">Phoenix</button>
+                        <button class="chip" role="listitem" data-lat="61.2181" data-lon="-149.9003" data-name="Anchorage, AK">Anchorage</button>
+                    </div>
+                </div>
+
+                <!-- Recent searches -->
+                <div id="recentSearches" class="recent-searches" hidden>
+                    <div class="section-header">
+                        <p class="section-label">Recent</p>
+                        <button id="clearRecentBtn" class="link-btn" aria-label="Clear recent searches">Clear</button>
+                    </div>
+                    <ul id="recentList" class="recent-list"></ul>
+                </div>
+
+                <div id="sidebarContent">
+                    <!-- Dynamically populated -->
                 </div>
             </aside>
-            
-            <section class="dashboard">
-                <div class="map-container glass-panel" style="padding:0; overflow:hidden;">
-                    <iframe id="googleMap" width="100%" height="100%" style="border:0;" allowfullscreen="" loading="lazy"></iframe>
-                    <div id="mapOverlay" class="map-overlay">
+
+            <!-- ─── DASHBOARD ─── -->
+            <section class="dashboard" aria-label="Map and analysis">
+                <div class="map-container glass-panel">
+                    <div id="leafletMap" role="application" aria-label="Interactive map. Click anywhere to analyze that location."></div>
+                    <div id="mapOverlay" class="map-overlay" aria-hidden="true">
                         <div class="spinner"></div>
-                        <p>Analyzing location...</p>
+                        <p>Analyzing location…</p>
                     </div>
                 </div>
-                
-                <div class="data-tabs glass-panel" style="display:none;" id="dataPanel">
-                    <div class="tab-buttons">
-                        <button class="tab-btn active" data-tab="overview">Overview</button>
-                        <button class="tab-btn" data-tab="forecast">Forecast</button>
-                        <button class="tab-btn" data-tab="alerts">Alerts <span id="alertCount"></span></button>
-                        <button class="tab-btn" data-tab="recommendations">Build Tips</button>
+
+                <div id="emptyState" class="empty-state-large glass-panel">
+                    <svg width="64" height="64" viewBox="0 0 64 64" fill="none" aria-hidden="true">
+                        <path d="M32 4L60 18v28L32 60 4 46V18L32 4z" stroke="#60a5fa" stroke-width="2"/>
+                        <circle cx="32" cy="32" r="8" stroke="#60a5fa" stroke-width="1.5" fill="rgba(96,165,250,0.08)"/>
+                        <path d="M32 12v8M32 44v8M12 32h8M44 32h8" stroke="#60a5fa" stroke-width="1.5" opacity="0.3"/>
+                    </svg>
+                    <h2>Select a Location</h2>
+                    <p>Search for a US address, click a suggested city, or click anywhere on the map to analyze weather risks and get construction recommendations.</p>
+                </div>
+
+                <div id="dataPanel" class="data-tabs glass-panel" hidden>
+                    <div class="tab-buttons" role="tablist" aria-label="Site analysis sections">
+                        <button class="tab-btn active" role="tab" data-tab="overview" id="tab-overview"
+                                aria-selected="true" aria-controls="overview" tabindex="0">Overview</button>
+                        <button class="tab-btn" role="tab" data-tab="forecast" id="tab-forecast"
+                                aria-selected="false" aria-controls="forecast" tabindex="-1">Forecast</button>
+                        <button class="tab-btn" role="tab" data-tab="history" id="tab-history"
+                                aria-selected="false" aria-controls="history" tabindex="-1">History</button>
+                        <button class="tab-btn" role="tab" data-tab="alerts" id="tab-alerts"
+                                aria-selected="false" aria-controls="alerts" tabindex="-1">
+                            Alerts <span id="alertCount" class="badge" hidden></span>
+                        </button>
+                        <button class="tab-btn" role="tab" data-tab="risk" id="tab-risk"
+                                aria-selected="false" aria-controls="risk" tabindex="-1">Risk Score</button>
+                        <button class="tab-btn" role="tab" data-tab="recommendations" id="tab-recommendations"
+                                aria-selected="false" aria-controls="recommendations" tabindex="-1">Build Tips</button>
                     </div>
                     <div class="tab-content-container">
-                        <div id="overview" class="tab-content active"></div>
-                        <div id="forecast" class="tab-content"></div>
-                        <div id="alerts" class="tab-content"></div>
-                        <div id="recommendations" class="tab-content"></div>
+                        <div id="overview" class="tab-content active" role="tabpanel"
+                             aria-labelledby="tab-overview" tabindex="0"></div>
+                        <div id="forecast" class="tab-content" role="tabpanel"
+                             aria-labelledby="tab-forecast" tabindex="0" hidden></div>
+                        <div id="history" class="tab-content" role="tabpanel"
+                             aria-labelledby="tab-history" tabindex="0" hidden></div>
+                        <div id="alerts" class="tab-content" role="tabpanel"
+                             aria-labelledby="tab-alerts" tabindex="0" hidden></div>
+                        <div id="risk" class="tab-content" role="tabpanel"
+                             aria-labelledby="tab-risk" tabindex="0" hidden></div>
+                        <div id="recommendations" class="tab-content" role="tabpanel"
+                             aria-labelledby="tab-recommendations" tabindex="0" hidden></div>
                     </div>
                 </div>
             </section>
         </main>
     </div>
+
+    <!-- ─── EXPORT MODAL ─── -->
+    <div id="exportModal" class="modal" role="dialog" aria-modal="true"
+         aria-labelledby="exportModalTitle" hidden>
+        <div class="modal-backdrop" data-close></div>
+        <div class="modal-card">
+            <h2 id="exportModalTitle">Export Site Report</h2>
+            <p>Choose a format for your construction analysis report:</p>
+            <div class="format-picker" role="radiogroup" aria-label="Export format">
+                <label class="format-option">
+                    <input type="radio" name="exportFormat" value="pdf" checked>
+                    <div class="format-card">
+                        <div class="format-icon" aria-hidden="true">📄</div>
+                        <div class="format-name">PDF</div>
+                        <div class="format-desc">Styled report ready to share or print</div>
+                    </div>
+                </label>
+                <label class="format-option">
+                    <input type="radio" name="exportFormat" value="csv">
+                    <div class="format-card">
+                        <div class="format-icon" aria-hidden="true">📊</div>
+                        <div class="format-name">CSV</div>
+                        <div class="format-desc">Tabular data for spreadsheets</div>
+                    </div>
+                </label>
+            </div>
+            <div class="modal-actions">
+                <button id="exportCancelBtn" class="btn-ghost" data-close>Cancel</button>
+                <button id="exportConfirmBtn" class="btn-primary">Download</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ─── COMPARISON PANEL ─── -->
+    <div id="comparePanel" class="compare-panel" role="dialog"
+         aria-modal="true" aria-labelledby="compareTitle" hidden>
+        <div class="modal-backdrop" data-close></div>
+        <div class="compare-card">
+            <header class="compare-header">
+                <h2 id="compareTitle">Compare Locations</h2>
+                <button id="compareCloseBtn" class="link-btn" aria-label="Close comparison panel" data-close>✕</button>
+            </header>
+            <div id="compareContent" class="compare-content">
+                <p class="empty-msg">No locations saved yet. Analyze a site, then click "Add to Compare" to start.</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- ─── TOAST CONTAINER ─── -->
+    <div id="toastContainer" class="toast-container" aria-live="polite" aria-atomic="true"></div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
     <script src="/app.js"></script>
 </body>
 </html>
