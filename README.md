@@ -49,13 +49,22 @@ The server boots on **http://localhost:5001** by default. Port 5001 (not the Fla
 
 ```
 Group_15_GAD/
+├── .github/workflows/
+│   └── ci.yml                # GitHub Actions: ruff + pytest on every PR
 ├── backend/
 │   ├── app.py                # Flask server: routes, risk engine, PDF export
-│   └── requirements.txt      # Pinned runtime dependencies (with SRS traceability)
+│   ├── requirements.txt      # Pinned runtime dependencies (with SRS traceability)
+│   └── requirements-dev.txt  # Dev tooling: pytest, pytest-mock, ruff
 ├── frontend/
 │   ├── index.html            # Single-page UI (sidebar + map + tabbed dashboard)
 │   ├── app.js                # Client logic: map, search, tabs, charts, export
 │   └── styles.css            # Glass-morphism theme, accessibility, responsive
+├── tests/                    # Backend test suite (pytest)
+│   ├── conftest.py           # Flask test client + reusable fake-API fixtures
+│   ├── test_utils.py         # normalize_state, jitter, composite math
+│   ├── test_routes.py        # Each /api/* route, NWS/Nominatim mocked
+│   └── test_export.py        # PDF generation smoke tests
+├── pyproject.toml            # pytest + ruff configuration
 ├── Group15SRS.html           # Software Requirements Specification (source of truth)
 ├── DESIGN.md                 # System design document
 └── README.md                 # This file
@@ -109,6 +118,21 @@ For the full breakdown — component design, data flow sequence, risk-scoring ma
 
 ---
 
+## Testing
+
+The backend has a [pytest](https://docs.pytest.org/) suite under `tests/`. External calls (NWS, Nominatim) are mocked via `pytest-mock` so the suite runs offline and is deterministic.
+
+```bash
+pip install -r backend/requirements-dev.txt   # installs runtime + dev deps
+
+ruff check .         # lint (also formats imports)
+pytest -v            # run the test suite (~36 tests, < 1 s)
+```
+
+GitHub Actions runs both on every PR and push to `main` (Python 3.10 + 3.12 matrix) — see [`.github/workflows/ci.yml`](./.github/workflows/ci.yml). PRs cannot be merged until CI is green.
+
+---
+
 ## Development workflow
 
 This project uses a feature-branch + pull-request workflow even though the team is small:
@@ -116,7 +140,8 @@ This project uses a feature-branch + pull-request workflow even though the team 
 1. Create a branch from `main`: `git checkout -b feat/<short-description>`.
 2. Make focused commits.
 3. Open a PR back to `main` with a description tied to the SRS section it touches.
-4. Self-review, run the app, then **squash-merge** to keep `main` history linear.
+4. Wait for CI to pass (ruff + pytest on Python 3.10 and 3.12).
+5. Self-review, run the app, then **squash-merge** to keep `main` history linear.
 
 Living docs convention: when a PR changes anything that's documented in [README.md](./README.md) or [DESIGN.md](./DESIGN.md) — endpoints, dependencies, file structure, run instructions, the risk model, the data tables, deployment, or SRS traceability — those docs are updated **in the same PR**. The DESIGN.md revision history gets bumped as well.
 

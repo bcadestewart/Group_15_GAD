@@ -1,0 +1,18 @@
+# =============================================================================
+# GAD — development-only dependencies (test suite + linting)
+# =============================================================================
+# Install (in addition to runtime deps):
+#   pip install -r backend/requirements.txt -r backend/requirements-dev.txt
+#
+# These are NOT required to run the app — only for running the test suite
+# and linting checks (locally and in CI). See SRS §4.3 Maintainability.
+# =============================================================================
+
+-r requirements.txt
+
+# ─── Test framework ─────────────────────────────────────────────────────────
+pytest==8.3.3              # test runner
+pytest-mock==3.14.0        # mocker fixture (wraps unittest.mock for cleaner syntax)
+
+# ─── Linting / formatting ───────────────────────────────────────────────────
+ruff==0.6.9                # fast Python linter; replaces flake8/isort/pyupgrade

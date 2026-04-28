@@ -4,7 +4,7 @@
 | ---------------- | -------------------------------------------------- |
 | Project          | Geospatial Architecture Database (GAD)             |
 | Course           | CS 4398 — Software Engineering, Group 15           |
-| Document version | 1.0                                                |
+| Document version | 1.1                                                |
 | Last updated     | 2026-04-28                                         |
 | Status           | Living document — update with relevant code changes |
 | Companion docs   | [README.md](./README.md), [Group15SRS.html](./Group15SRS.html) |
@@ -273,9 +273,17 @@ The jitter is intentional: without it, every site within a state returns identic
 | requests   | 2.31.0  | NWS + Nominatim HTTP client                   | §3.1, §3.2, §3.5      |
 | reportlab  | 4.0.7   | Styled PDF generation                         | §3.3                  |
 
-Pins are exact (`==`) for reproducibility per SRS §4.3. See `backend/requirements.txt` for transitive-dependency notes.
+### 10.2 Development (Python, not required at runtime)
 
-### 10.2 Frontend (CDN)
+| Package      | Version | Purpose                                                |
+| ------------ | ------- | ------------------------------------------------------ |
+| pytest       | 8.3.3   | Test runner                                            |
+| pytest-mock  | 3.14.0  | `mocker` fixture for cleaner mocking syntax            |
+| ruff         | 0.6.9   | Linter (E/W/F/I/B/UP/SIM rule set; replaces flake8 + isort) |
+
+Pins are exact (`==`) for reproducibility per SRS §4.3. See `backend/requirements.txt` and `backend/requirements-dev.txt` for transitive-dependency notes.
+
+### 10.3 Frontend (CDN)
 
 | Library    | Version | Purpose                                  |
 | ---------- | ------- | ---------------------------------------- |
@@ -283,7 +291,7 @@ Pins are exact (`==`) for reproducibility per SRS §4.3. See `backend/requiremen
 | Chart.js   | 4.4.1   | Decadal-trend line chart in History tab  |
 | Google Fonts (Inter, JetBrains Mono) | n/a | Typography |
 
-### 10.3 Network
+### 10.4 Network
 
 The backend issues a `User-Agent: GAD/1.0 (cs4398@group15.com)` header on all outbound calls — required by the Nominatim usage policy. All calls have an 8-second timeout; failures map to 503 with a user-readable message.
 
@@ -312,7 +320,7 @@ The `pause and retry` flow described in SRS §3.5.2 is implemented via the toast
 | -------------------- | ---------------------------------------- | ---------------------------------------------------------------------------------------- |
 | §4.1 Reliability     | ≤ 5 s for location lookup + data pull    | All upstream calls have 8 s timeout; typical end-to-end is 1.5–3 s. WSGI worker model keeps the path short. |
 | §4.2 Robustness      | Display all encountered errors           | See §11; all routes return JSON errors, frontend surfaces them via toast.                |
-| §4.3 Maintainability | Periodic upkeep, contributor access      | Public GitHub repo, pinned deps, single-file backend, this design doc + SRS in tree.     |
+| §4.3 Maintainability | Periodic upkeep, contributor access      | Public GitHub repo, pinned deps, single-file backend, this design doc + SRS in tree, automated test suite (`tests/`, 36 tests) gated by GitHub Actions CI on every PR. |
 | §4.4 Security        | No PII; HTTPS                            | No user accounts, no logging of coordinates server-side. Static tables only. HTTPS at deploy. |
 | §4.5 Usability       | Accessibility, clean UI, broad audience  | ARIA roles + skip link + keyboard nav in `index.html`; focus rings + color-blind-aware palette in `styles.css`. |
 
@@ -334,7 +342,7 @@ The `pause and retry` flow described in SRS §3.5.2 is implemented via the toast
 | §3.5.2 UC2: no internet               | Notify and pause                             | `online`/`offline` browser events drive `#offlineBanner`.                             |
 | §4.1 Reliability ≤ 5 s                | Performance budget                           | 8 s upstream timeout caps worst-case; lazy-import keeps cold-start under 1 s.         |
 | §4.2 Robustness                       | All errors surfaced                          | Centralized `try/except` in routes; toast UI in client.                               |
-| §4.3 Maintainability                  | Periodic upkeep                              | Pinned deps, README + DESIGN living docs, GitHub PR workflow.                         |
+| §4.3 Maintainability                  | Periodic upkeep                              | Pinned deps, README + DESIGN living docs, GitHub PR workflow, pytest suite + ruff lint gated by GitHub Actions CI. |
 | §4.4 Security                         | No PII; HTTPS                                | Stateless backend, no logging of inputs, deploy behind TLS.                           |
 | §4.5 Usability                        | Accessibility + clean UI                     | Skip link, ARIA, focus rings, keyboard nav, motion-safe animations.                   |
 
@@ -355,6 +363,17 @@ The `pause and retry` flow described in SRS §3.5.2 is implemented via the toast
 - `PORT` — server bind port (default 5001).
 - No other configuration; static tables are compiled into `app.py`.
 
+### Continuous Integration
+
+`.github/workflows/ci.yml` runs on every push to `main` and every pull request:
+
+1. Checks out the repo and sets up Python 3.10 and 3.12 (matrix build).
+2. Installs `backend/requirements-dev.txt` (which transitively pulls in runtime deps via `-r requirements.txt`).
+3. Runs `ruff check .` — fails on any lint error.
+4. Runs `pytest -v` — fails if any of the 36 tests fail.
+
+Branch protection on `main` should require both matrix legs (Python 3.10 and 3.12) to pass before merging. CI uses pip's wheel cache keyed on the requirements files for faster reruns.
+
 ---
 
 ## 15. Future work / known limitations
@@ -365,7 +384,7 @@ The `pause and retry` flow described in SRS §3.5.2 is implemented via the toast
 - **Persisted comparisons.** Comparisons live only in `localStorage`; no account / sync.
 - **Retry queue.** When the user goes offline mid-flow, in-flight requests are dropped rather than queued (SRS §3.5.2 says "allow user to retry," and we do — by re-clicking — but a transparent queue would be friendlier).
 - **PDF localization.** Reports are English-only; reportlab styles are hardcoded.
-- **Test coverage.** No automated tests yet. Adding `pytest` for backend route smoke tests + a basic Cypress or Playwright run on the SPA would close the loop on SRS §4.3 maintainability.
+- **Frontend test coverage.** Backend has a 36-test pytest suite (utility, route, export) gated by CI; the frontend (`app.js`) has no automated coverage yet. A Playwright smoke test that loads the SPA, clicks a known city, and asserts the risk-score panel renders would be the next increment.
 
 ---
 
@@ -374,3 +393,4 @@ The `pause and retry` flow described in SRS §3.5.2 is implemented via the toast
 | Date       | Author          | Change                                                                  |
 | ---------- | --------------- | ----------------------------------------------------------------------- |
 | 2026-04-28 | Brandon Stewart | Initial DESIGN.md created alongside README.md. Sourced from SRS rev. 2026-04-28 (Leaflet + OpenStreetMap mapping stack). |
+| 2026-04-28 | Brandon Stewart | v1.1 — Added pytest suite (36 tests) and GitHub Actions CI. Updated §10 dependencies to split runtime vs. dev, §12 NFR compliance to cite the test suite, §13 traceability to cite CI for §4.3, §14 deployment to document the CI workflow, and §15 future work to refocus on frontend coverage. |

@@ -1,0 +1,45 @@
+[project]
+name = "gad"
+version = "0.1.0"
+description = "Geospatial Architecture Database — site-based weather risk and construction recommendations"
+readme = "README.md"
+requires-python = ">=3.8"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--strict-config",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py38"
+extend-exclude = [
+    "**/__pycache__",
+    ".venv",
+    "build",
+    "dist",
+]
+
+[tool.ruff.lint]
+# Sensible default rule set:
+#   E, W       — pycodestyle errors and warnings
+#   F          — pyflakes (undefined names, unused imports, etc.)
+#   I          — isort (import order)
+#   B          — flake8-bugbear (likely bugs and design issues)
+#   UP         — pyupgrade (modernize syntax for the targeted Python version)
+#   SIM        — flake8-simplify (simplifiable patterns)
+select = ["E", "W", "F", "I", "B", "UP", "SIM"]
+ignore = [
+    "E501",  # line too long — soft-enforced via formatter, not lint
+    "B008",  # function call in default argument — Flask uses this pattern
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = [
+    "B011",  # assert False — fine in tests
+    "S101",  # use of assert — that's the whole point of tests
+]
