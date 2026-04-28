@@ -5,9 +5,10 @@ Flask backend exposing weather, risk, history, and export endpoints.
 import io
 import math
 import os
-import requests
 from datetime import datetime
-from flask import Flask, request, jsonify, send_file
+
+import requests
+from flask import Flask, jsonify, request, send_file
 
 app = Flask(__name__, static_folder='../frontend', static_url_path='/')
 
@@ -257,7 +258,8 @@ STATE_NAME_TO_CODE = {
 
 def normalize_state(s):
     """Accept either '2-letter code' or 'Full State Name' → 2-letter code (or '')."""
-    if not s: return ''
+    if not s:
+        return ''
     s = s.strip()
     if len(s) == 2 and s.upper() in STATE_PROFILES:
         return s.upper()
@@ -411,10 +413,16 @@ def export():
     try:
         from reportlab.lib import colors
         from reportlab.lib.pagesizes import LETTER
-        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
         from reportlab.lib.units import inch
-        from reportlab.platypus import (SimpleDocTemplate, Paragraph, Spacer,
-                                        Table, TableStyle, PageBreak)
+        from reportlab.platypus import (
+            PageBreak,
+            Paragraph,
+            SimpleDocTemplate,
+            Spacer,
+            Table,
+            TableStyle,
+        )
     except ImportError:
         return jsonify({'error': 'reportlab not installed. Run: pip install reportlab'}), 500
 
