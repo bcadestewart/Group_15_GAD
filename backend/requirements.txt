@@ -1,3 +1,58 @@
+# =============================================================================
+# GAD — Geospatial Architecture Database
+# Runtime dependencies derived from the Group 15 SRS (2/24/2026, rev. 2026-04-28)
+# =============================================================================
+# Python: requires 3.8+ (Flask 3.0 dropped 3.7 support)
+# Install: pip install -r requirements.txt
+#
+# Each pinned dependency below is annotated with the SRS section(s) it
+# satisfies. Version pins are exact (==) for reproducibility per
+# SRS §4.3 Maintainability.
+# =============================================================================
+
+# ─── Web framework ───────────────────────────────────────────────────────────
+# Satisfies:
+#   §2.4 End-User Operation Environment — "access the database through the
+#        internet on their preferred browser"
+#   §2.5 Design and Implementation Constraints — Python primary language
+#   §3.1 Leaflet + OpenStreetMap Integration — serves the frontend that
+#        hosts the Leaflet map
+#   §4.1 Reliability — lightweight WSGI app keeps response time under the
+#        5-second budget
 Flask==3.0.0
+
+# ─── HTTP client for external APIs ───────────────────────────────────────────
+# Satisfies:
+#   §3.1 Leaflet + OpenStreetMap Integration — calls the OpenStreetMap
+#        Nominatim API (https://nominatim.openstreetmap.org) to resolve
+#        addresses/coordinates for display on the Leaflet map
+#   §3.2 Weather Data Retrieval/Analysis — calls api.weather.gov (NWS)
+#   §3.4 Assessments of Environment Constraints — fetches active alerts
+#        feeding the risk-score pipeline
+#   §3.5 Error Handling — RequestException handling enables the
+#        "no internet" / "service unavailable" flows
 requests==2.31.0
+
+# ─── PDF report generation ───────────────────────────────────────────────────
+# Satisfies:
+#   §3.3 Data Export — "Users will be allowed to export desired weather
+#        data in the format of PDF/CSV"
+#   §3.3.1 Use Case 1 — Construction recommendations export
+#   §3.3.2 Use Case 2 — Analyzed weather history export
+# (CSV export in §3.3 is handled by the Python standard library `csv`
+#  module on the frontend side and requires no extra dependency.)
 reportlab==4.0.7
+
+# =============================================================================
+# Transitive dependencies (resolved automatically by pip; listed for audit)
+# =============================================================================
+#   Flask 3.0.0  -> Werkzeug>=3.0, Jinja2>=3.1, click>=8.1.3,
+#                   itsdangerous>=2.1.2, MarkupSafe>=2.0, blinker>=1.6.2
+#   requests 2.31.0 -> urllib3<3,>=1.21.1, charset-normalizer<4,>=2,
+#                      idna<4,>=2.5, certifi>=2017.4.17
+#   reportlab 4.0.7 -> Pillow>=9.0.0, chardet
+#
+# To regenerate a fully-pinned lockfile (recommended before submission):
+#     pip install pip-tools
+#     pip-compile --generate-hashes requirements.txt -o requirements.lock
+# =============================================================================
