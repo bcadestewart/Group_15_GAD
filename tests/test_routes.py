@@ -127,6 +127,9 @@ def test_weather_happy_path(
     assert body["forecast"][0]["name"] == "Tonight"
     assert len(body["alerts"]) == 1
     assert body["alerts"][0]["event"] == "Coastal Flood Advisory"
+    # Alerts ship with a `url` linking to the relevant NWS safety page so
+    # the Alerts tab can render them as deep-links.
+    assert body["alerts"][0]["url"] == "https://www.weather.gov/safety/flood"
 
     # All seven hazards scored, composite in range.
     assert set(body["scores"].keys()) == {

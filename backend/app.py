@@ -596,6 +596,62 @@ def composite_from_scores(scores):
     return max(0, min(100, round(total / max_possible * 100)))
 
 
+# ─── NWS event-name → safety/info-page URL mapping ──────────────────────────
+# Maps an NWS alert event name (e.g. "Coastal Flood Advisory", "Tornado
+# Warning") to the corresponding NWS safety/info page so the frontend can
+# render the alert as a deep-link. Order is significant — more specific
+# substrings are checked first (e.g. "wind chill" → cold, not "wind").
+ALERT_INFO_FALLBACK = 'https://www.weather.gov/alerts'
+
+_ALERT_RULES = (
+    # (substring, safety URL)
+    ('tornado',        'https://www.weather.gov/safety/tornado'),
+    ('tsunami',        'https://www.weather.gov/safety/tsunami'),
+    ('hurricane',      'https://www.weather.gov/safety/hurricane'),
+    ('tropical',       'https://www.weather.gov/safety/hurricane'),
+    ('typhoon',        'https://www.weather.gov/safety/hurricane'),
+    ('storm surge',    'https://www.weather.gov/safety/hurricane'),
+    ('flood',          'https://www.weather.gov/safety/flood'),
+    ('thunder',        'https://www.weather.gov/safety/thunderstorm'),
+    ('lightning',      'https://www.weather.gov/safety/lightning'),
+    ('hail',           'https://www.weather.gov/safety/thunderstorm'),
+    ('fire weather',   'https://www.weather.gov/safety/wildfire'),
+    ('red flag',       'https://www.weather.gov/safety/wildfire'),
+    ('wildfire',       'https://www.weather.gov/safety/wildfire'),
+    ('smoke',          'https://www.weather.gov/safety/airquality'),
+    ('air quality',    'https://www.weather.gov/safety/airquality'),
+    ('excessive heat', 'https://www.weather.gov/safety/heat'),
+    ('heat',           'https://www.weather.gov/safety/heat'),
+    ('wind chill',     'https://www.weather.gov/safety/cold'),
+    ('cold',           'https://www.weather.gov/safety/cold'),
+    ('freeze',         'https://www.weather.gov/safety/cold'),
+    ('frost',          'https://www.weather.gov/safety/cold'),
+    ('blizzard',       'https://www.weather.gov/safety/winter'),
+    ('winter',         'https://www.weather.gov/safety/winter'),
+    ('snow',           'https://www.weather.gov/safety/winter'),
+    ('ice storm',      'https://www.weather.gov/safety/winter'),
+    ('sleet',          'https://www.weather.gov/safety/winter'),
+    ('high wind',      'https://www.weather.gov/safety/wind'),
+    ('wind',           'https://www.weather.gov/safety/wind'),
+    ('fog',            'https://www.weather.gov/safety/fog'),
+    ('rip current',    'https://www.weather.gov/safety/ripcurrent'),
+    ('beach hazard',   'https://www.weather.gov/safety/ripcurrent'),
+    ('surf',           'https://www.weather.gov/safety/ripcurrent'),
+)
+
+
+def alert_info_url(event_name):
+    """Return an NWS safety/info-page URL for a given alert event type, or
+    the general /alerts page as a fallback. Returns None for empty input."""
+    if not event_name:
+        return None
+    e = event_name.lower()
+    for needle, url in _ALERT_RULES:
+        if needle in e:
+            return url
+    return ALERT_INFO_FALLBACK
+
+
 # ═══════════════ ROUTES ═════════════════════════════════════════════════════
 
 @app.route('/')
@@ -681,6 +737,7 @@ def weather():
                         'event': ap.get('event'),
                         'severity': ap.get('severity'),
                         'headline': ap.get('headline'),
+                        'url': alert_info_url(ap.get('event')),
                     })
 
         # Risk scores (state-level + jitter for cross-location variation)

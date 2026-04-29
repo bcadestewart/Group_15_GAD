@@ -113,3 +113,98 @@ def test_risk_category_weights_sum_to_one():
     If anyone edits weights, this guards the invariant."""
     total = sum(c["weight"] for c in gad_app.RISK_CATEGORIES.values())
     assert abs(total - 1.0) < 1e-9, f"weights sum to {total}, expected 1.0"
+
+
+# ═══════════════ alert_info_url ═════════════════════════════════════════════
+
+
+class TestAlertInfoUrl:
+    """Maps NWS alert event names to weather.gov safety pages so the Alerts
+    tab can deep-link. Substring matching with order-sensitive precedence."""
+
+    def test_empty_inputs_return_none(self):
+        assert gad_app.alert_info_url("") is None
+        assert gad_app.alert_info_url(None) is None
+
+    def test_tornado_routes_to_tornado_safety(self):
+        assert gad_app.alert_info_url("Tornado Warning") == \
+            "https://www.weather.gov/safety/tornado"
+        assert gad_app.alert_info_url("Tornado Watch") == \
+            "https://www.weather.gov/safety/tornado"
+
+    def test_hurricane_and_tropical_route_to_hurricane(self):
+        assert gad_app.alert_info_url("Hurricane Warning") == \
+            "https://www.weather.gov/safety/hurricane"
+        assert gad_app.alert_info_url("Tropical Storm Watch") == \
+            "https://www.weather.gov/safety/hurricane"
+        assert gad_app.alert_info_url("Storm Surge Warning") == \
+            "https://www.weather.gov/safety/hurricane"
+
+    def test_flood_variants_route_to_flood(self):
+        for name in [
+            "Flood Warning", "Flash Flood Warning",
+            "Coastal Flood Advisory", "River Flood Watch",
+        ]:
+            assert gad_app.alert_info_url(name) == \
+                "https://www.weather.gov/safety/flood", name
+
+    def test_winter_variants_route_to_winter(self):
+        for name in ["Winter Storm Warning", "Blizzard Warning",
+                     "Ice Storm Warning", "Heavy Snow Warning"]:
+            assert gad_app.alert_info_url(name) == \
+                "https://www.weather.gov/safety/winter", name
+
+    def test_heat_routes_to_heat(self):
+        assert gad_app.alert_info_url("Heat Advisory") == \
+            "https://www.weather.gov/safety/heat"
+        assert gad_app.alert_info_url("Excessive Heat Warning") == \
+            "https://www.weather.gov/safety/heat"
+
+    def test_wind_chill_resolves_to_cold_not_wind(self):
+        """Substring precedence: 'wind chill' contains both 'wind' and
+        'chill', but it's a cold-weather hazard. Must hit /safety/cold,
+        not /safety/wind."""
+        assert gad_app.alert_info_url("Wind Chill Warning") == \
+            "https://www.weather.gov/safety/cold"
+        assert gad_app.alert_info_url("Wind Chill Advisory") == \
+            "https://www.weather.gov/safety/cold"
+
+    def test_high_wind_routes_to_wind(self):
+        assert gad_app.alert_info_url("High Wind Warning") == \
+            "https://www.weather.gov/safety/wind"
+        assert gad_app.alert_info_url("Wind Advisory") == \
+            "https://www.weather.gov/safety/wind"
+
+    def test_fire_weather_routes_to_wildfire(self):
+        assert gad_app.alert_info_url("Fire Weather Watch") == \
+            "https://www.weather.gov/safety/wildfire"
+        assert gad_app.alert_info_url("Red Flag Warning") == \
+            "https://www.weather.gov/safety/wildfire"
+
+    def test_thunderstorm_and_lightning(self):
+        assert gad_app.alert_info_url("Severe Thunderstorm Warning") == \
+            "https://www.weather.gov/safety/thunderstorm"
+
+    def test_air_quality_and_smoke(self):
+        assert gad_app.alert_info_url("Air Quality Alert") == \
+            "https://www.weather.gov/safety/airquality"
+        assert gad_app.alert_info_url("Dense Smoke Advisory") == \
+            "https://www.weather.gov/safety/airquality"
+
+    def test_tsunami_routes_to_tsunami(self):
+        assert gad_app.alert_info_url("Tsunami Warning") == \
+            "https://www.weather.gov/safety/tsunami"
+
+    def test_unknown_event_falls_back_to_alerts_overview(self):
+        """Anything we don't recognize lands on the general /alerts page
+        rather than 404'ing the link."""
+        assert gad_app.alert_info_url("Mystery Event") == \
+            "https://www.weather.gov/alerts"
+        assert gad_app.alert_info_url("Special Marine Statement") == \
+            "https://www.weather.gov/alerts"
+
+    def test_case_insensitivity(self):
+        assert gad_app.alert_info_url("TORNADO WARNING") == \
+            "https://www.weather.gov/safety/tornado"
+        assert gad_app.alert_info_url("hurricane watch") == \
+            "https://www.weather.gov/safety/hurricane"
