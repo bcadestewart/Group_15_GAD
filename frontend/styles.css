@@ -183,12 +183,82 @@ ul, ol { list-style: none; }
 [hidden] { display: none !important; }
 
 /* ─── Main content ──────────────────────────────────────────────────────── */
+/* ─── Resizable panel splitters ─────────────────────────────────────────── */
+.splitter {
+  position: relative;
+  background: transparent;
+  z-index: 5;
+  transition: background-color 120ms ease;
+}
+.splitter::after {
+  /* Subtle indicator dots in the center so users know the splitter exists */
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  background: var(--text-muted, #94a3b8);
+  border-radius: 2px;
+  opacity: 0.25;
+  transition: opacity 120ms ease;
+}
+.splitter-vertical {
+  cursor: col-resize;
+}
+.splitter-vertical::after {
+  width: 2px;
+  height: 36px;
+  transform: translate(-50%, -50%);
+}
+.splitter-horizontal {
+  cursor: row-resize;
+}
+.splitter-horizontal::after {
+  width: 36px;
+  height: 2px;
+  transform: translate(-50%, -50%);
+}
+.splitter:hover,
+.splitter.dragging {
+  background: rgba(96, 165, 250, 0.18);
+}
+.splitter:hover::after,
+.splitter.dragging::after {
+  opacity: 0.7;
+  background: var(--accent, #60a5fa);
+}
+.splitter:focus-visible {
+  outline: 2px solid var(--accent, #60a5fa);
+  outline-offset: -1px;
+}
+/* Disable selection + force the right cursor everywhere while dragging */
+body.is-resizing-h,
+body.is-resizing-h * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+body.is-resizing-v,
+body.is-resizing-v * {
+  cursor: row-resize !important;
+  user-select: none !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  .splitter,
+  .splitter::after {
+    transition: none;
+  }
+}
+
+/* Three-column grid: sidebar | vertical splitter | dashboard.
+   --gad-sidebar-w is updated by the resize logic in app.js and persisted
+   to localStorage. The 6px middle column is the draggable splitter. */
 .main-content {
-  display: flex;
+  display: grid;
+  grid-template-columns: var(--gad-sidebar-w, 320px) 6px 1fr;
   flex: 1;
   padding: 1.25rem;
   gap: 1.25rem;
   overflow: hidden;
+  min-height: 0;
 }
 
 .glass-panel {
@@ -201,12 +271,15 @@ ul, ol { list-style: none; }
 
 /* ─── Sidebar ───────────────────────────────────────────────────────────── */
 .sidebar {
-  width: 320px;
+  /* Width is now controlled by .main-content's grid-template-columns
+     (var(--gad-sidebar-w)). flex-shrink kept for the responsive @media
+     fallback below 960px where layout flips back to flex column. */
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
   gap: 1rem;
   overflow-y: auto;
+  min-width: 0;
 }
 
 .search-box {
@@ -447,22 +520,24 @@ ul, ol { list-style: none; }
 .meta-row strong { color: var(--text-primary); font-weight: 600; }
 
 /* ─── Dashboard ─────────────────────────────────────────────────────────── */
+/* Three-row grid: map | horizontal splitter | data panel (or empty state).
+   --gad-map-h drives the map row's height; the panel grows with 1fr.
+   The 6px middle row is the draggable horizontal splitter. */
 .dashboard {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-rows: var(--gad-map-h, 320px) 6px 1fr;
   gap: 1.25rem;
   overflow: hidden;
   min-width: 0;
+  min-height: 0;
 }
 
 .map-container {
-  height: 38%;
-  min-height: 280px;
+  /* Height is now controlled by .dashboard's grid-template-rows. */
+  min-height: 200px;
   position: relative;
   padding: 0;
   overflow: hidden;
-  flex-shrink: 0;
 }
 #leafletMap { width: 100%; height: 100%; border-radius: var(--radius-lg); }
 
@@ -1083,7 +1158,9 @@ ul, ol { list-style: none; }
 /* ═══════════════ RESPONSIVE LAYOUT (mobile + tablet) ════════════════════ */
 
 @media (max-width: 960px) {
+  /* Below 960px, abandon the resizable grid and stack vertically instead. */
   .main-content {
+    display: flex;
     flex-direction: column;
     overflow-y: auto;
     overflow-x: hidden;
@@ -1096,10 +1173,16 @@ ul, ol { list-style: none; }
     overflow-y: visible;
   }
   .dashboard {
+    display: flex;
+    flex-direction: column;
     overflow: visible;
   }
   .map-container {
     height: 320px;
+  }
+  /* Splitters are not useful in stacked layout */
+  .splitter {
+    display: none;
   }
   .data-tabs {
     overflow: visible;

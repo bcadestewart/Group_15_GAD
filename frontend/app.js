@@ -155,6 +155,121 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   initMap();
 
+  /* ─── Resizable panels (splitters) ─────────────────────────────────────── */
+  const LAYOUT_KEY = 'gad.layout';
+  const LAYOUT_DEFAULTS = { sidebarWidth: 320, mapHeight: 320 };
+  const LAYOUT_LIMITS = {
+    sidebarWidth: { min: 240, max: 600 },
+    mapHeight:    { min: 200, max: 800 },
+  };
+
+  function readLayout() {
+    try {
+      return { ...LAYOUT_DEFAULTS, ...JSON.parse(localStorage.getItem(LAYOUT_KEY) || '{}') };
+    } catch { return { ...LAYOUT_DEFAULTS }; }
+  }
+  function writeLayout(updates) {
+    try {
+      const merged = { ...readLayout(), ...updates };
+      localStorage.setItem(LAYOUT_KEY, JSON.stringify(merged));
+    } catch { /* localStorage unavailable — silent fail */ }
+  }
+  function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+  function applyLayout(layout) {
+    const root = document.documentElement;
+    root.style.setProperty('--gad-sidebar-w', `${layout.sidebarWidth}px`);
+    root.style.setProperty('--gad-map-h',     `${layout.mapHeight}px`);
+    // Sync the aria-valuenow on each splitter so screen readers stay accurate.
+    const vSplit = document.querySelector('.splitter-vertical');
+    const hSplit = document.querySelector('.splitter-horizontal');
+    if (vSplit) vSplit.setAttribute('aria-valuenow', String(layout.sidebarWidth));
+    if (hSplit) hSplit.setAttribute('aria-valuenow', String(layout.mapHeight));
+  }
+
+  function initSplitter({ el, axis, key, getDelta, onChange }) {
+    if (!el) return;
+    const limits = LAYOUT_LIMITS[key];
+    let startCoord = 0;
+    let startSize  = 0;
+
+    function onMove(e) {
+      const layout = readLayout();
+      const next = clamp(startSize + getDelta(e, startCoord), limits.min, limits.max);
+      layout[key] = next;
+      applyLayout(layout);
+      if (onChange) onChange(next);
+    }
+    function onUp() {
+      el.classList.remove('dragging');
+      document.body.classList.remove('is-resizing-h', 'is-resizing-v');
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup',  onUp);
+      // Persist the final size
+      writeLayout({ [key]: readLayout()[key] });
+    }
+    el.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      startCoord = axis === 'x' ? e.clientX : e.clientY;
+      startSize  = readLayout()[key];
+      el.classList.add('dragging');
+      document.body.classList.add(axis === 'x' ? 'is-resizing-h' : 'is-resizing-v');
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup',  onUp);
+    });
+    // Keyboard: arrow keys nudge by 16px
+    el.addEventListener('keydown', (e) => {
+      const STEP = 16;
+      let delta = 0;
+      if (axis === 'x') {
+        if (e.key === 'ArrowLeft')  delta = -STEP;
+        if (e.key === 'ArrowRight') delta =  STEP;
+      } else {
+        if (e.key === 'ArrowUp')    delta = -STEP;
+        if (e.key === 'ArrowDown')  delta =  STEP;
+      }
+      if (!delta) return;
+      e.preventDefault();
+      const layout = readLayout();
+      layout[key] = clamp(layout[key] + delta, limits.min, limits.max);
+      applyLayout(layout);
+      writeLayout({ [key]: layout[key] });
+      if (onChange) onChange(layout[key]);
+    });
+  }
+
+  function initSplitters() {
+    // Apply persisted layout on first paint
+    applyLayout(readLayout());
+
+    initSplitter({
+      el: document.querySelector('.splitter-vertical'),
+      axis: 'x',
+      key: 'sidebarWidth',
+      getDelta: (e, start) => e.clientX - start,
+    });
+    initSplitter({
+      el: document.querySelector('.splitter-horizontal'),
+      axis: 'y',
+      key: 'mapHeight',
+      getDelta: (e, start) => e.clientY - start,
+      // Leaflet needs invalidateSize() when its container resizes
+      onChange: () => map && map.invalidateSize(),
+    });
+
+    // Window-resize: clamp persisted sizes against new viewport bounds.
+    window.addEventListener('resize', () => {
+      const layout = readLayout();
+      const maxSidebar = Math.min(LAYOUT_LIMITS.sidebarWidth.max, window.innerWidth * 0.6);
+      const maxMap     = Math.min(LAYOUT_LIMITS.mapHeight.max,    window.innerHeight * 0.7);
+      layout.sidebarWidth = clamp(layout.sidebarWidth, LAYOUT_LIMITS.sidebarWidth.min, maxSidebar);
+      layout.mapHeight    = clamp(layout.mapHeight,    LAYOUT_LIMITS.mapHeight.min,    maxMap);
+      applyLayout(layout);
+      if (map) map.invalidateSize();
+    });
+  }
+  initSplitters();
+
   function setMapView(lat, lon, zoom = 11) {
     if (!map) return;
     map.setView([lat, lon], zoom);

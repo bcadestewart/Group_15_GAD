@@ -94,6 +94,16 @@
                 </div>
             </aside>
 
+            <!-- ─── VERTICAL SPLITTER (sidebar / dashboard) ─── -->
+            <div class="splitter splitter-vertical"
+                 role="separator"
+                 aria-orientation="vertical"
+                 aria-label="Resize sidebar width. Use left and right arrow keys."
+                 aria-valuenow="320"
+                 aria-valuemin="240"
+                 aria-valuemax="600"
+                 tabindex="0"></div>
+
             <!-- ─── DASHBOARD ─── -->
             <section class="dashboard" aria-label="Map and analysis">
                 <div class="map-container glass-panel">
@@ -103,6 +113,16 @@
                         <p>Analyzing location…</p>
                     </div>
                 </div>
+
+                <!-- ─── HORIZONTAL SPLITTER (map / data panel) ─── -->
+                <div class="splitter splitter-horizontal"
+                     role="separator"
+                     aria-orientation="horizontal"
+                     aria-label="Resize map height. Use up and down arrow keys."
+                     aria-valuenow="320"
+                     aria-valuemin="200"
+                     aria-valuemax="800"
+                     tabindex="0"></div>
 
                 <div id="emptyState" class="empty-state-large glass-panel">
                     <svg width="64" height="64" viewBox="0 0 64 64" fill="none" aria-hidden="true">
