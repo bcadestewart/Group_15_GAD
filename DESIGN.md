@@ -4,7 +4,7 @@
 | ---------------- | -------------------------------------------------- |
 | Project          | Geospatial Architecture Database (GAD)             |
 | Course           | CS 4398 — Software Engineering, Group 15           |
-| Document version | 1.2                                                |
+| Document version | 1.3                                                |
 | Last updated     | 2026-04-28                                         |
 | Status           | Living document — update with relevant code changes |
 | Companion docs   | [README.md](./README.md), [Group15SRS.html](./Group15SRS.html) |
@@ -237,7 +237,9 @@ The currently adopted IBC year per state, with state-specific override labels fo
 
 ### 8.5 Historical events (`HISTORICAL_EVENTS`)
 
-Curated entries of catastrophic / severe events per state. Not exhaustive — selected for educational salience (e.g. Andrew → FBC reform, Katrina → levee failure). Each entry carries:
+Curated entries of catastrophic / severe events per state. **Coverage spans all 50 states + DC** (51 entries, ~87 events total) so every clickable point on the map produces meaningful history. Each state has 1–3 entries — disaster-prone states (FL, CA, NC, KY, HI, etc.) carry up to three; quieter states carry one representative event. The list is alphabetized by state code for maintenance.
+
+Selection bias is toward educational salience (e.g. Andrew → FBC reform, Katrina → levee failure, Camp Fire → modern wildfire policy) rather than completeness; this is not a substitute for the NOAA Storm Events Database. Each entry carries:
 
 | Field      | Purpose                                                                |
 | ---------- | ---------------------------------------------------------------------- |
@@ -247,7 +249,10 @@ Curated entries of catastrophic / severe events per state. Not exhaustive — se
 | `note`     | One-line context for the History tab.                                  |
 | `wiki`     | Wikipedia article URL — frontend renders `event` as an external link.  |
 
-The frontend defensively falls back to a Wikipedia search URL if `wiki` is missing, but every curated entry currently ships with a hand-verified link. `tests/test_routes.py::test_history_every_curated_event_has_wiki_url` enforces this invariant.
+The frontend defensively falls back to a Wikipedia search URL if `wiki` is missing, but every curated entry currently ships with a hand-verified link. Two tests guard the invariants:
+
+- `tests/test_routes.py::test_history_every_curated_event_has_wiki_url` — every event has a `wiki` URL on `en.wikipedia.org`.
+- `tests/test_routes.py::test_history_covers_all_us_states_and_dc` — coverage stays at all 50 states + DC, and `HISTORICAL_EVENTS` / `STATE_PROFILES` / `IECC_ZONES` / `BUILDING_CODES` keep the same key set so no state has partial data.
 
 ### 8.6 Decadal trends (`DECADAL_TRENDS`)
 
@@ -405,3 +410,4 @@ Branch protection on `main` should require both matrix legs (Python 3.10 and 3.1
 | 2026-04-28 | Brandon Stewart | Initial DESIGN.md created alongside README.md. Sourced from SRS rev. 2026-04-28 (Leaflet + OpenStreetMap mapping stack). |
 | 2026-04-28 | Brandon Stewart | v1.1 — Added pytest suite (36 tests) and GitHub Actions CI. Updated §10 dependencies to split runtime vs. dev, §12 NFR compliance to cite the test suite, §13 traceability to cite CI for §4.3, §14 deployment to document the CI workflow, and §15 future work to refocus on frontend coverage. |
 | 2026-04-28 | Brandon Stewart | v1.2 — History tab disasters are now clickable, deep-linking to the corresponding Wikipedia article (opens in new tab, `rel="noopener noreferrer"`). Added a `wiki` field to every entry in `HISTORICAL_EVENTS`; documented in §8.5. Added test guarding the invariant that every curated event ships with a wiki URL (suite now at 37 tests). |
+| 2026-04-28 | Brandon Stewart | v1.3 — Expanded `HISTORICAL_EVENTS` from 10 states to 51 (all 50 + DC), ~87 hand-verified events with Wikipedia deep-links. Added DC to `STATE_PROFILES`, `IECC_ZONES`, `BUILDING_CODES`, and `STATE_NAME_TO_CODE` so DC clicks resolve as a region instead of falling back to defaults. New test `test_history_covers_all_us_states_and_dc` locks coverage and the four-table key parity. Suite now at 38 tests. |

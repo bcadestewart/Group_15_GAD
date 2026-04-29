@@ -186,6 +186,22 @@ def test_history_every_curated_event_has_wiki_url(client):
                 f"{state}/{ev['event']}: {ev['wiki']}"
 
 
+def test_history_covers_all_us_states_and_dc():
+    """Every clickable point on the map should resolve to historical events.
+    HISTORICAL_EVENTS must cover all 50 states + DC (51 entries). If a future
+    edit drops coverage, this test catches it before it ships."""
+    import app as gad_app
+    assert len(gad_app.HISTORICAL_EVENTS) == 51, (
+        f"expected 51 entries (50 states + DC), got {len(gad_app.HISTORICAL_EVENTS)}"
+    )
+    # Same state codes in HISTORICAL_EVENTS, STATE_PROFILES, IECC_ZONES,
+    # BUILDING_CODES — keeps the four lookups in sync.
+    states = set(gad_app.HISTORICAL_EVENTS)
+    assert states == set(gad_app.STATE_PROFILES)
+    assert states == set(gad_app.IECC_ZONES)
+    assert states == set(gad_app.BUILDING_CODES)
+
+
 def test_history_unknown_state_returns_default_trends(client):
     res = client.get("/api/history?state=ZZ")
     assert res.status_code == 200
