@@ -4,7 +4,7 @@
 | ---------------- | -------------------------------------------------- |
 | Project          | Geospatial Architecture Database (GAD)             |
 | Course           | CS 4398 — Software Engineering, Group 15           |
-| Document version | 1.4                                                |
+| Document version | 1.5                                                |
 | Last updated     | 2026-04-28                                         |
 | Status           | Living document — update with relevant code changes |
 | Companion docs   | [README.md](./README.md), [Group15SRS.html](./Group15SRS.html) |
@@ -99,7 +99,9 @@ The backend keeps no state between requests; every API call is independent. Rece
 
 External libraries (loaded via CDN, not bundled): Leaflet 1.9.4, Chart.js 4.4.1, Inter & JetBrains Mono fonts (Google Fonts).
 
-**Client-side persistence:** `localStorage` keys `gad.recent` (≤5 items) and `gad.compare` (≤3 items). No PII — coordinates, display name, and timestamp only.
+**Client-side persistence:** `localStorage` keys `gad.recent` (≤5 items), `gad.compare` (≤3 items), and `gad.layout` (`{sidebarWidth, mapHeight}` in pixels). No PII — coordinates, display name, timestamp, and layout dimensions only.
+
+**Resizable layout:** The main page is a CSS Grid with two draggable splitters — a vertical splitter between the sidebar and the dashboard (resizes sidebar width), and a horizontal splitter between the map and the data panel (resizes map height). The splitters update CSS custom properties (`--gad-sidebar-w`, `--gad-map-h`) on `:root`, persist sizes to `gad.layout` in `localStorage`, and clamp to limits (sidebar 240–600 px, map 200–800 px) on both drag and `window.resize` events. Splitters are keyboard-accessible (arrow keys nudge by 16 px when focused), expose `role="separator"` with `aria-orientation` / `aria-valuenow` / `aria-valuemin` / `aria-valuemax`, and are hidden under the existing `@media (max-width: 960px)` responsive breakpoint where the layout collapses to a stacked flex column. Map height changes call `map.invalidateSize()` so Leaflet redraws cleanly.
 
 ### 5.2 Backend
 
@@ -346,7 +348,7 @@ The `pause and retry` flow described in SRS §3.5.2 is implemented via the toast
 | §4.2 Robustness      | Display all encountered errors           | See §11; all routes return JSON errors, frontend surfaces them via toast.                |
 | §4.3 Maintainability | Periodic upkeep, contributor access      | Public GitHub repo, pinned deps, single-file backend, this design doc + SRS in tree, automated test suite (`tests/`, 36 tests) gated by GitHub Actions CI on every PR. |
 | §4.4 Security        | No PII; HTTPS                            | No user accounts, no logging of coordinates server-side. Static tables only. HTTPS at deploy. |
-| §4.5 Usability       | Accessibility, clean UI, broad audience  | ARIA roles + skip link + keyboard nav in `index.html`; focus rings + color-blind-aware palette in `styles.css`. |
+| §4.5 Usability       | Accessibility, clean UI, broad audience  | ARIA roles + skip link + keyboard nav in `index.html`; focus rings + color-blind-aware palette in `styles.css`; resizable sidebar + map split (mouse + keyboard, persisted across sessions). |
 
 ---
 
@@ -368,7 +370,7 @@ The `pause and retry` flow described in SRS §3.5.2 is implemented via the toast
 | §4.2 Robustness                       | All errors surfaced                          | Centralized `try/except` in routes; toast UI in client.                               |
 | §4.3 Maintainability                  | Periodic upkeep                              | Pinned deps, README + DESIGN living docs, GitHub PR workflow, pytest suite + ruff lint gated by GitHub Actions CI. |
 | §4.4 Security                         | No PII; HTTPS                                | Stateless backend, no logging of inputs, deploy behind TLS.                           |
-| §4.5 Usability                        | Accessibility + clean UI                     | Skip link, ARIA, focus rings, keyboard nav, motion-safe animations.                   |
+| §4.5 Usability                        | Accessibility + clean UI                     | Skip link, ARIA, focus rings, keyboard nav, motion-safe animations, draggable + keyboard-resizable sidebar/map splits with localStorage persistence. |
 
 ---
 
@@ -421,3 +423,4 @@ Branch protection on `main` should require both matrix legs (Python 3.10 and 3.1
 | 2026-04-28 | Brandon Stewart | v1.2 — History tab disasters are now clickable, deep-linking to the corresponding Wikipedia article (opens in new tab, `rel="noopener noreferrer"`). Added a `wiki` field to every entry in `HISTORICAL_EVENTS`; documented in §8.5. Added test guarding the invariant that every curated event ships with a wiki URL (suite now at 37 tests). |
 | 2026-04-28 | Brandon Stewart | v1.3 — Expanded `HISTORICAL_EVENTS` from 10 states to 51 (all 50 + DC), ~87 hand-verified events with Wikipedia deep-links. Added DC to `STATE_PROFILES`, `IECC_ZONES`, `BUILDING_CODES`, and `STATE_NAME_TO_CODE` so DC clicks resolve as a region instead of falling back to defaults. New test `test_history_covers_all_us_states_and_dc` locks coverage and the four-table key parity. Suite now at 38 tests. |
 | 2026-04-28 | Brandon Stewart | v1.4 — Active weather alerts in the Alerts tab are now clickable, deep-linking to the relevant NWS safety/info page (`weather.gov/safety/<topic>`). Added `alert_info_url()` helper and `_ALERT_RULES` ordered substring-matching table to `backend/app.py`; `/api/weather` now ships a `url` field on each alert. New §9.1 documents the algorithm and precedence rules. Frontend reuses the `.event-link` styling under a shared `.alert-link` class. Suite now at 52 tests (13 new `TestAlertInfoUrl` cases + 1 url assertion in the weather happy path). |
+| 2026-04-28 | Brandon Stewart | v1.5 — Sidebar and map are now resizable via draggable splitters. CSS Grid layout driven by `--gad-sidebar-w` / `--gad-map-h` custom properties, sizes persisted to `localStorage` (`gad.layout`), keyboard-accessible (arrow keys), clamped to sensible bounds, hidden on narrow viewports. Map height changes trigger `map.invalidateSize()` so Leaflet redraws cleanly. Strengthens SRS §4.5 Usability traceability. Frontend-only change — backend untouched, suite still at 52 tests. |
