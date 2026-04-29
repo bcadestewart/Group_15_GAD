@@ -4,7 +4,7 @@
 | ---------------- | -------------------------------------------------- |
 | Project          | Geospatial Architecture Database (GAD)             |
 | Course           | CS 4398 — Software Engineering, Group 15           |
-| Document version | 1.3                                                |
+| Document version | 1.4                                                |
 | Last updated     | 2026-04-28                                         |
 | Status           | Living document — update with relevant code changes |
 | Companion docs   | [README.md](./README.md), [Group15SRS.html](./Group15SRS.html) |
@@ -174,7 +174,7 @@ Single-call site analysis. Internally fans out to NWS (point lookup, forecast, a
   ```json
   {
     "forecast":   [{ "name", "temperature", "temperatureUnit", "shortForecast" }],
-    "alerts":     [{ "event", "severity", "headline" }],
+    "alerts":     [{ "event", "severity", "headline", "url" }],
     "scores":     { "hurricane", "tornado", "flood", "winter", "heat", "seismic", "wildfire" },
     "composite":  0,
     "observation": { "temperature", "windSpeed", "humidity", "conditions" },
@@ -183,6 +183,7 @@ Single-call site analysis. Internally fans out to NWS (point lookup, forecast, a
     "buildingCode": "FBC 2023 (IBC-based)"
   }
   ```
+  The `url` field on each alert is computed server-side via `alert_info_url()` (see §9.1) and points to the NWS safety/info page for that hazard type (e.g. `weather.gov/safety/flood` for any flood alert). The Alerts tab renders the alert event name as a clickable link to this URL.
 - **Errors:** 400 missing coords, 404 outside US (NWS rejects), 503 NWS unreachable.
 
 ### 7.3 `GET /api/history?state={XX}`
@@ -260,7 +261,15 @@ Hazard-events-per-decade for the last five decades, used by the History tab's Ch
 
 ---
 
-## 9. Risk-scoring algorithm
+## 9. Algorithms
+
+### 9.1 Alert info-URL mapping (`alert_info_url`)
+
+NWS publishes ~100 distinct alert event types ("Tornado Warning", "Coastal Flood Advisory", "Wind Chill Watch", etc.). Each maps to a small set of stable safety/info pages on weather.gov (`/safety/tornado`, `/safety/flood`, `/safety/cold`, ...).
+
+`alert_info_url(event_name)` walks an ordered list of `(substring, url)` rules and returns the first match, falling back to `weather.gov/alerts` for unrecognized event names. **Order is significant**: more-specific substrings come before less-specific ones, e.g. `"wind chill"` is checked before `"wind"` so a Wind Chill Warning resolves to `/safety/cold` rather than `/safety/wind`. The full rule list lives in `_ALERT_RULES` in `backend/app.py`. `tests/test_utils.py::TestAlertInfoUrl` covers the major hazard categories plus the precedence edge cases (13 tests).
+
+### 9.2 Risk-scoring algorithm
 
 Given a `(lat, lon)` and the resolved state code:
 
@@ -411,3 +420,4 @@ Branch protection on `main` should require both matrix legs (Python 3.10 and 3.1
 | 2026-04-28 | Brandon Stewart | v1.1 — Added pytest suite (36 tests) and GitHub Actions CI. Updated §10 dependencies to split runtime vs. dev, §12 NFR compliance to cite the test suite, §13 traceability to cite CI for §4.3, §14 deployment to document the CI workflow, and §15 future work to refocus on frontend coverage. |
 | 2026-04-28 | Brandon Stewart | v1.2 — History tab disasters are now clickable, deep-linking to the corresponding Wikipedia article (opens in new tab, `rel="noopener noreferrer"`). Added a `wiki` field to every entry in `HISTORICAL_EVENTS`; documented in §8.5. Added test guarding the invariant that every curated event ships with a wiki URL (suite now at 37 tests). |
 | 2026-04-28 | Brandon Stewart | v1.3 — Expanded `HISTORICAL_EVENTS` from 10 states to 51 (all 50 + DC), ~87 hand-verified events with Wikipedia deep-links. Added DC to `STATE_PROFILES`, `IECC_ZONES`, `BUILDING_CODES`, and `STATE_NAME_TO_CODE` so DC clicks resolve as a region instead of falling back to defaults. New test `test_history_covers_all_us_states_and_dc` locks coverage and the four-table key parity. Suite now at 38 tests. |
+| 2026-04-28 | Brandon Stewart | v1.4 — Active weather alerts in the Alerts tab are now clickable, deep-linking to the relevant NWS safety/info page (`weather.gov/safety/<topic>`). Added `alert_info_url()` helper and `_ALERT_RULES` ordered substring-matching table to `backend/app.py`; `/api/weather` now ships a `url` field on each alert. New §9.1 documents the algorithm and precedence rules. Frontend reuses the `.event-link` styling under a shared `.alert-link` class. Suite now at 52 tests (13 new `TestAlertInfoUrl` cases + 1 url assertion in the weather happy path). |

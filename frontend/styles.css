@@ -698,8 +698,10 @@ ul, ol { list-style: none; }
   flex-shrink: 0;
 }
 
-/* Clickable event title — links out to Wikipedia (opens in new tab) */
-.event-link {
+/* Clickable titles that link out to an external resource (Wikipedia for
+   events, weather.gov/safety for alerts). Opens in new tab. */
+.event-link,
+.alert-link {
   color: var(--text-primary);
   text-decoration: none;
   display: inline-flex;
@@ -708,36 +710,45 @@ ul, ol { list-style: none; }
   border-radius: 4px;
   transition: color 120ms ease;
 }
-.event-link strong {
+.event-link strong,
+.alert-link strong {
   text-decoration: underline;
   text-decoration-color: rgba(96, 165, 250, 0.45);
   text-decoration-thickness: 1px;
   text-underline-offset: 3px;
   transition: text-decoration-color 120ms ease;
 }
-.event-link:hover {
+.event-link:hover,
+.alert-link:hover {
   color: var(--accent, #60a5fa);
 }
-.event-link:hover strong {
+.event-link:hover strong,
+.alert-link:hover strong {
   text-decoration-color: var(--accent, #60a5fa);
 }
-.event-link:focus-visible {
+.event-link:focus-visible,
+.alert-link:focus-visible {
   outline: 2px solid var(--accent, #60a5fa);
   outline-offset: 3px;
 }
-.event-link .external-icon {
+.event-link .external-icon,
+.alert-link .external-icon {
   font-size: 0.72rem;
   color: var(--text-muted);
   transform: translateY(-1px);
   transition: color 120ms ease;
 }
-.event-link:hover .external-icon {
+.event-link:hover .external-icon,
+.alert-link:hover .external-icon {
   color: var(--accent, #60a5fa);
 }
 @media (prefers-reduced-motion: reduce) {
   .event-link,
+  .alert-link,
   .event-link strong,
-  .event-link .external-icon {
+  .alert-link strong,
+  .event-link .external-icon,
+  .alert-link .external-icon {
     transition: none;
   }
 }

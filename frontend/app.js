@@ -578,14 +578,27 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     $('alerts').innerHTML = `
       <h3 class="panel-title">Active Weather Alerts</h3>
-      ${d.alerts.map(a => `
+      ${d.alerts.map(a => {
+        // Backend ships a `url` linking to the NWS safety page for this
+        // alert type. Defensive fallback to the NWS /alerts overview if
+        // missing for any reason.
+        const infoUrl = a.url || 'https://www.weather.gov/alerts';
+        return `
         <div class="alert-card severity-${(a.severity || '').toLowerCase()}" role="alert">
           <div class="alert-header">
-            <strong>${escapeHtml(a.event)}</strong>
+            <a class="alert-link"
+               href="${escapeAttr(infoUrl)}"
+               target="_blank"
+               rel="noopener noreferrer"
+               aria-label="Learn more about ${escapeAttr(a.event || 'this alert')} on weather.gov (opens in a new tab)">
+              <strong>${escapeHtml(a.event)}</strong>
+              <span class="external-icon" aria-hidden="true">↗</span>
+            </a>
             <span class="severity-pill severity-${(a.severity || '').toLowerCase()}">${escapeHtml(a.severity)}</span>
           </div>
           <p>${escapeHtml(a.headline || '')}</p>
-        </div>`).join('')}
+        </div>`;
+      }).join('')}
     `;
   }
 
