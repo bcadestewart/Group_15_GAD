@@ -4,7 +4,7 @@
 | ---------------- | -------------------------------------------------- |
 | Project          | Geospatial Architecture Database (GAD)             |
 | Course           | CS 4398 — Software Engineering, Group 15           |
-| Document version | 1.1                                                |
+| Document version | 1.2                                                |
 | Last updated     | 2026-04-28                                         |
 | Status           | Living document — update with relevant code changes |
 | Companion docs   | [README.md](./README.md), [Group15SRS.html](./Group15SRS.html) |
@@ -237,7 +237,17 @@ The currently adopted IBC year per state, with state-specific override labels fo
 
 ### 8.5 Historical events (`HISTORICAL_EVENTS`)
 
-Curated entries of catastrophic / severe events per state. Not exhaustive — selected for educational salience (e.g. Andrew → FBC reform, Katrina → levee failure).
+Curated entries of catastrophic / severe events per state. Not exhaustive — selected for educational salience (e.g. Andrew → FBC reform, Katrina → levee failure). Each entry carries:
+
+| Field      | Purpose                                                                |
+| ---------- | ---------------------------------------------------------------------- |
+| `year`     | Event year (int).                                                      |
+| `event`    | Display name (e.g. "Hurricane Katrina").                               |
+| `severity` | One of `Catastrophic` / `Severe` — drives the pill color in the UI.    |
+| `note`     | One-line context for the History tab.                                  |
+| `wiki`     | Wikipedia article URL — frontend renders `event` as an external link.  |
+
+The frontend defensively falls back to a Wikipedia search URL if `wiki` is missing, but every curated entry currently ships with a hand-verified link. `tests/test_routes.py::test_history_every_curated_event_has_wiki_url` enforces this invariant.
 
 ### 8.6 Decadal trends (`DECADAL_TRENDS`)
 
@@ -394,3 +404,4 @@ Branch protection on `main` should require both matrix legs (Python 3.10 and 3.1
 | ---------- | --------------- | ----------------------------------------------------------------------- |
 | 2026-04-28 | Brandon Stewart | Initial DESIGN.md created alongside README.md. Sourced from SRS rev. 2026-04-28 (Leaflet + OpenStreetMap mapping stack). |
 | 2026-04-28 | Brandon Stewart | v1.1 — Added pytest suite (36 tests) and GitHub Actions CI. Updated §10 dependencies to split runtime vs. dev, §12 NFR compliance to cite the test suite, §13 traceability to cite CI for §4.3, §14 deployment to document the CI workflow, and §15 future work to refocus on frontend coverage. |
+| 2026-04-28 | Brandon Stewart | v1.2 — History tab disasters are now clickable, deep-linking to the corresponding Wikipedia article (opens in new tab, `rel="noopener noreferrer"`). Added a `wiki` field to every entry in `HISTORICAL_EVENTS`; documented in §8.5. Added test guarding the invariant that every curated event ships with a wiki URL (suite now at 37 tests). |

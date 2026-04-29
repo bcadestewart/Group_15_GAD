@@ -507,16 +507,28 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function renderHistory(d) {
     const h = d.history || { events: [], trends: {} };
-    const eventsHtml = h.events && h.events.length ? h.events.map(ev => `
-      <div class="event-card">
-        <div class="event-header">
-          <strong>${escapeHtml(ev.event)}</strong>
-          <span class="event-year">${ev.year}</span>
+    const eventsHtml = h.events && h.events.length ? h.events.map(ev => {
+      // Prefer the curated wiki URL; fall back to a Wikipedia search if missing.
+      const wikiUrl = ev.wiki
+        || `https://en.wikipedia.org/wiki/Special:Search?search=${encodeURIComponent(ev.event)}`;
+      return `
+        <div class="event-card">
+          <div class="event-header">
+            <a class="event-link"
+               href="${escapeAttr(wikiUrl)}"
+               target="_blank"
+               rel="noopener noreferrer"
+               aria-label="Open Wikipedia article for ${escapeAttr(ev.event)} (opens in a new tab)">
+              <strong>${escapeHtml(ev.event)}</strong>
+              <span class="external-icon" aria-hidden="true">↗</span>
+            </a>
+            <span class="event-year">${ev.year}</span>
+          </div>
+          <span class="severity-pill severity-${(ev.severity || '').toLowerCase()}">${escapeHtml(ev.severity)}</span>
+          <p class="event-note">${escapeHtml(ev.note)}</p>
         </div>
-        <span class="severity-pill severity-${(ev.severity || '').toLowerCase()}">${escapeHtml(ev.severity)}</span>
-        <p class="event-note">${escapeHtml(ev.note)}</p>
-      </div>
-    `).join('') : '<p class="panel-text">No notable historical events on file for this state.</p>';
+      `;
+    }).join('') : '<p class="panel-text">No notable historical events on file for this state.</p>';
 
     $('history').innerHTML = `
       <h3 class="panel-title">Historical Disasters</h3>
