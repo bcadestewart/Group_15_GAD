@@ -168,6 +168,22 @@ def test_history_known_state_returns_curated_events(client):
     assert len(body["events"]) >= 1
     assert any("Hurricane" in e["event"] for e in body["events"])
     assert "1980s" in body["trends"]
+    # Every curated event should ship with a Wikipedia URL so the History
+    # tab can render it as a deep-link.
+    for ev in body["events"]:
+        assert "wiki" in ev, f"event {ev['event']} missing wiki URL"
+        assert ev["wiki"].startswith("https://en.wikipedia.org/"), ev["wiki"]
+
+
+def test_history_every_curated_event_has_wiki_url(client):
+    """Inventory check across all curated states — guards against future
+    additions to HISTORICAL_EVENTS forgetting the wiki field."""
+    import app as gad_app
+    for state, events in gad_app.HISTORICAL_EVENTS.items():
+        for ev in events:
+            assert "wiki" in ev, f"{state}/{ev['event']} missing wiki URL"
+            assert ev["wiki"].startswith("https://en.wikipedia.org/"), \
+                f"{state}/{ev['event']}: {ev['wiki']}"
 
 
 def test_history_unknown_state_returns_default_trends(client):
