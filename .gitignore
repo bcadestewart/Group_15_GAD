@@ -1,16 +1,25 @@
-# Environments
-venv/
-.venv/
-env/
-.env/
-
-# Byte-compiled / optimized / DLL files
+# Python
 __pycache__/
 *.py[cod]
-*$py.class
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 
-# IDEs
-.idea/
+# IDE
 .vscode/
-*.swp
+.idea/
 .DS_Store
+
+# Environment
+.env
+.env.local
+
+# GAD database file (auto-created on boot, seeded from db/seed_data.py)
+backend/gad.db
+backend/gad.db-journal
+backend/gad.db-wal
+backend/gad.db-shm

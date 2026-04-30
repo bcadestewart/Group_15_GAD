@@ -53,6 +53,13 @@ Group_15_GAD/
 │   └── ci.yml                # GitHub Actions: ruff + pytest on every PR
 ├── backend/
 │   ├── app.py                # Flask server: routes, risk engine, PDF export
+│   ├── db/                   # SQLAlchemy data layer
+│   │   ├── __init__.py       # Engine, session factory, init_db()
+│   │   ├── models.py         # State, HistoricalEvent, DecadalTrend,
+│   │   │                     #   RiskCategory, ConstructionTip
+│   │   ├── seed_data.py      # Canonical Python source for all reference data
+│   │   └── seed.py           # Idempotent loader (data → tables)
+│   ├── gad.db                # SQLite file (gitignored; auto-created on boot)
 │   ├── requirements.txt      # Pinned runtime dependencies (with SRS traceability)
 │   └── requirements-dev.txt  # Dev tooling: pytest, pytest-mock, ruff
 ├── frontend/
@@ -69,6 +76,16 @@ Group_15_GAD/
 ├── DESIGN.md                 # System design document
 └── README.md                 # This file
 ```
+
+---
+
+## Database
+
+All static reference data (state hazard profiles, IECC zones, building codes, historical events, decadal trends, risk categories, construction tips) lives in a SQLite database accessed via the **SQLAlchemy 2.0 ORM**. The canonical Python representation is in `backend/db/seed_data.py`; the schema is in `backend/db/models.py`.
+
+On the first app boot, `init_db()` creates the schema and seeds it from `seed_data` automatically — no manual migration step is required for a fresh checkout. The seed loader is idempotent, so subsequent boots are no-ops. The default DB file is `backend/gad.db` (gitignored). Override with the `GAD_DATABASE_URL` environment variable, e.g. `GAD_DATABASE_URL=sqlite:///:memory: python3 backend/app.py`. The test suite uses `sqlite:///:memory:` so CI never touches a file on disk.
+
+Schema versioning via Alembic is planned as a follow-up — see [DESIGN.md §15](./DESIGN.md#15-future-work--known-limitations).
 
 ---
 

@@ -180,29 +180,46 @@ def test_history_known_state_returns_curated_events(client):
 
 def test_history_every_curated_event_has_wiki_url(client):
     """Inventory check across all curated states — guards against future
-    additions to HISTORICAL_EVENTS forgetting the wiki field."""
-    import app as gad_app
-    for state, events in gad_app.HISTORICAL_EVENTS.items():
-        for ev in events:
-            assert "wiki" in ev, f"{state}/{ev['event']} missing wiki URL"
-            assert ev["wiki"].startswith("https://en.wikipedia.org/"), \
-                f"{state}/{ev['event']}: {ev['wiki']}"
+    additions to historical_events forgetting the wiki field. Queries the
+    database directly (post-ORM-migration the data lives there, not in a
+    module-level dict)."""
+    from db import get_session
+    from db.models import HistoricalEvent
+    from sqlalchemy import select
+
+    with get_session() as db:
+        events = db.scalars(select(HistoricalEvent)).all()
+    assert len(events) >= 51, f"expected ≥51 events, got {len(events)}"
+    for ev in events:
+        assert ev.wiki, f"{ev.state_code}/{ev.event} missing wiki URL"
+        assert ev.wiki.startswith("https://en.wikipedia.org/"), \
+            f"{ev.state_code}/{ev.event}: {ev.wiki}"
 
 
 def test_history_covers_all_us_states_and_dc():
     """Every clickable point on the map should resolve to historical events.
-    HISTORICAL_EVENTS must cover all 50 states + DC (51 entries). If a future
-    edit drops coverage, this test catches it before it ships."""
-    import app as gad_app
-    assert len(gad_app.HISTORICAL_EVENTS) == 51, (
-        f"expected 51 entries (50 states + DC), got {len(gad_app.HISTORICAL_EVENTS)}"
-    )
-    # Same state codes in HISTORICAL_EVENTS, STATE_PROFILES, IECC_ZONES,
-    # BUILDING_CODES — keeps the four lookups in sync.
-    states = set(gad_app.HISTORICAL_EVENTS)
-    assert states == set(gad_app.STATE_PROFILES)
-    assert states == set(gad_app.IECC_ZONES)
-    assert states == set(gad_app.BUILDING_CODES)
+    The `states` table covers all 50 states + DC (51 rows) and every state
+    has at least one curated historical event. Future edits that drop
+    coverage from any of the reference tables get caught here."""
+    from db import get_session
+    from db.models import DecadalTrend, HistoricalEvent, State
+    from sqlalchemy import func, select
+
+    with get_session() as db:
+        state_count = db.scalar(select(func.count()).select_from(State))
+        states_with_events = set(db.scalars(
+            select(HistoricalEvent.state_code).distinct()
+        ).all())
+        states_with_trends = set(db.scalars(
+            select(DecadalTrend.state_code).distinct()
+        ).all())
+        all_states = set(db.scalars(select(State.code)).all())
+
+    assert state_count == 51, f"expected 51 states (50 + DC), got {state_count}"
+    assert states_with_events == all_states, \
+        f"states without events: {all_states - states_with_events}"
+    assert states_with_trends == all_states, \
+        f"states without decadal trends: {all_states - states_with_trends}"
 
 
 def test_history_unknown_state_returns_default_trends(client):
