@@ -57,6 +57,19 @@ reportlab==4.0.7
 # bindings are used; no additional driver pin is required.
 SQLAlchemy==2.0.36
 
+# ─── Schema migrations ──────────────────────────────────────────────────────
+# Satisfies:
+#   §4.3 Maintainability — Alembic versions the database schema. init_db()
+#        calls `alembic.command.upgrade(cfg, "head")` on every boot so a
+#        fresh checkout is always at the latest revision; the seed loader
+#        runs after migrations succeed.
+# Schema-change workflow:
+#   1. Edit backend/db/models.py
+#   2. `alembic revision --autogenerate -m "describe change"`
+#   3. Hand-review the generated file in alembic/versions/
+#   4. Commit. Next app boot applies the migration automatically.
+alembic==1.13.3
+
 # =============================================================================
 # Transitive dependencies (resolved automatically by pip; listed for audit)
 # =============================================================================
