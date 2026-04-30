@@ -4,9 +4,15 @@ Shared pytest fixtures for the GAD test suite.
 Imports the Flask app from backend/app.py and provides a test client.
 External HTTP calls (NWS, Nominatim) are stubbed via pytest-mock in
 individual tests — never let CI hit real APIs.
+
+Database isolation: the test suite uses an in-memory SQLite database
+(via the GAD_DATABASE_URL env var, set BEFORE backend/app.py is imported
+so its module-level init_db() call targets the in-memory DB). Each
+session gets a freshly seeded copy.
 """
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -15,6 +21,10 @@ import pytest
 # Make `backend/` importable so `import app` works from anywhere.
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "backend"))
+
+# Point at an in-memory SQLite *before* importing the app (whose module
+# load calls init_db() against whatever URL is configured at that moment).
+os.environ.setdefault("GAD_DATABASE_URL", "sqlite:///:memory:")
 
 import app as gad_app  # noqa: E402 — sys.path setup must precede import
 

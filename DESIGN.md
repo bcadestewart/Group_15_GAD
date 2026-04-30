@@ -4,7 +4,7 @@
 | ---------------- | -------------------------------------------------- |
 | Project          | Geospatial Architecture Database (GAD)             |
 | Course           | CS 4398 — Software Engineering, Group 15           |
-| Document version | 1.5                                                |
+| Document version | 1.6                                                |
 | Last updated     | 2026-04-28                                         |
 | Status           | Living document — update with relevant code changes |
 | Companion docs   | [README.md](./README.md), [Group15SRS.html](./Group15SRS.html) |
@@ -105,16 +105,25 @@ External libraries (loaded via CDN, not bundled): Leaflet 1.9.4, Chart.js 4.4.1,
 
 ### 5.2 Backend
 
-`backend/app.py` is intentionally a single module to keep the surface area tight for a course project. Logical sections inside it:
+`backend/app.py` is the Flask entry point: routes, the alert-info-URL helper, and the risk-scoring math. All static reference data lives in the `backend/db/` package (see §5.3) and is queried via the SQLAlchemy ORM. Logical sections inside `app.py`:
 
-| Section                  | Lines  | Responsibility                                                              |
-| ------------------------ | ------ | --------------------------------------------------------------------------- |
-| Risk taxonomy            | top    | `RISK_CATEGORIES` (weights), `CONSTRUCTION_TIPS` per hazard.                |
-| Reference tables         | mid    | `STATE_PROFILES`, `IECC_ZONES`, `BUILDING_CODES`, `HISTORICAL_EVENTS`, `DECADAL_TRENDS`. |
-| Utilities                | mid    | `normalize_state`, `jitter`, `composite_from_scores`.                       |
-| Routes                   | bottom | `/`, `/api/search`, `/api/weather`, `/api/history`, `/api/export`, `/api/health`. |
+| Section            | Responsibility                                                                                |
+| ------------------ | --------------------------------------------------------------------------------------------- |
+| Imports + init     | Wires up the DB layer; `init_db()` runs at module load (idempotent: create_all + seed).       |
+| Re-exports         | `RISK_CATEGORIES`, `CONSTRUCTION_TIPS`, `DEFAULT_PROFILE`, `DEFAULT_TRENDS` re-imported from `db.seed_data` so the PDF export path and the test suite can keep using them as Python dicts. They are the same constants the seed loader writes to the DB. |
+| Utilities          | `normalize_state` (DB query), `jitter` (deterministic noise), `composite_from_scores` (uses `RISK_CATEGORIES` weights), `alert_info_url` (NWS-event → safety-URL mapping; see §9.1). |
+| Routes             | `/`, `/api/search`, `/api/weather`, `/api/history`, `/api/export`, `/api/health`.             |
 
 `reportlab` is **lazy-imported** inside the export handler so the rest of the app can boot even when reportlab is not installed.
+
+### 5.3 Data layer (`backend/db/`)
+
+| File              | Responsibility                                                                                                  |
+| ----------------- | --------------------------------------------------------------------------------------------------------------- |
+| `__init__.py`     | SQLAlchemy engine + `SessionLocal` factory + `get_session()` context manager + `init_db()` (create_all + seed). DB URL comes from `GAD_DATABASE_URL` (default `sqlite:///backend/gad.db`; tests use `sqlite:///:memory:` with `StaticPool`). |
+| `models.py`       | SQLAlchemy 2.0 typed declarative models: `State`, `HistoricalEvent`, `DecadalTrend`, `RiskCategory`, `ConstructionTip`. See §8 for the full schema. |
+| `seed_data.py`    | The canonical Python representation of all reference data — the same dicts that previously lived in `app.py` (`STATE_PROFILES`, `IECC_ZONES`, `BUILDING_CODES`, `HISTORICAL_EVENTS`, `DECADAL_TRENDS`, `RISK_CATEGORIES`, `CONSTRUCTION_TIPS`, `STATE_NAME_TO_CODE`, `DEFAULT_PROFILE`, `DEFAULT_TRENDS`). Adding a new state or event only requires editing this file; the seed loader picks it up on the next boot. |
+| `seed.py`         | `seed_database(session)` — idempotent loader that walks the `seed_data` dicts and inserts rows. Short-circuits if the `states` table already has rows, so it's safe to call on every app boot. |
 
 ---
 
@@ -210,6 +219,58 @@ Liveness probe. Returns `{ status: "ok", time: <iso8601> }`.
 
 ## 8. Data model
 
+The data layer uses **SQLAlchemy 2.0** declarative models against SQLite. Every static lookup table is a first-class entity; the previous Python dicts (`STATE_PROFILES`, `IECC_ZONES`, `BUILDING_CODES`, `HISTORICAL_EVENTS`, `DECADAL_TRENDS`, `RISK_CATEGORIES`, `CONSTRUCTION_TIPS`, `STATE_NAME_TO_CODE`) are now the seed source for these tables, populated by `db.seed.seed_database()` on first boot.
+
+```mermaid
+erDiagram
+    states ||--o{ historical_events : "has"
+    states ||--o{ decadal_trends    : "has"
+    risk_categories ||--o{ construction_tips : "has"
+
+    states {
+        string code PK "2-letter (e.g. FL)"
+        string full_name UK "e.g. Florida"
+        string iecc_zone "1/2, 3, 4, ..."
+        string building_code "FBC 2023, IBC 2021, ..."
+        int hurricane "0-10"
+        int tornado "0-10"
+        int flood "0-10"
+        int winter "0-10"
+        int heat "0-10"
+        int seismic "0-10"
+        int wildfire "0-10"
+    }
+    historical_events {
+        int id PK
+        string state_code FK
+        int year
+        string event
+        string severity
+        string note
+        string wiki "Wikipedia URL"
+    }
+    decadal_trends {
+        string state_code PK_FK
+        string decade PK "1980s, 1990s, ..."
+        int count
+    }
+    risk_categories {
+        string key PK "hurricane, tornado, ..."
+        string label
+        float weight
+        string icon
+        int sort_order
+    }
+    construction_tips {
+        int id PK
+        string hazard_key FK
+        string tip
+        int sort_order
+    }
+```
+
+The state table consolidates four prior dicts (`STATE_PROFILES` + `IECC_ZONES` + `BUILDING_CODES` + `STATE_NAME_TO_CODE`) into a single row per state; `normalize_state` uses an `OR` query against `code` and `full_name` to accept either form. `RiskCategory` and `ConstructionTip` keep their `sort_order` columns so the original ordering of the Python lists (which the PDF export and frontend rely on) survives the round-trip through the database.
+
 ### 8.1 Risk taxonomy (`RISK_CATEGORIES`)
 
 Seven hazard categories, each with a fixed weight summing to **1.00**:
@@ -298,6 +359,7 @@ The jitter is intentional: without it, every site within a state returns identic
 | Flask      | 3.0.0   | WSGI app, routing, static-file serving        | §2.4, §2.5            |
 | requests   | 2.31.0  | NWS + Nominatim HTTP client                   | §3.1, §3.2, §3.5      |
 | reportlab  | 4.0.7   | Styled PDF generation                         | §3.3                  |
+| SQLAlchemy | 2.0.36  | ORM for all reference data (SQLite by default; override via `GAD_DATABASE_URL`) | §4.3 |
 
 ### 10.2 Development (Python, not required at runtime)
 
@@ -387,7 +449,7 @@ The `pause and retry` flow described in SRS §3.5.2 is implemented via the toast
 
 ### Configuration
 - `PORT` — server bind port (default 5001).
-- No other configuration; static tables are compiled into `app.py`.
+- `GAD_DATABASE_URL` — SQLAlchemy connection URL. Default: `sqlite:///backend/gad.db`. The test suite uses `sqlite:///:memory:` so CI never writes a file. Production deployments could swap in Postgres without code changes (no SQLite-specific SQL is used).
 
 ### Continuous Integration
 
@@ -404,8 +466,9 @@ Branch protection on `main` should require both matrix legs (Python 3.10 and 3.1
 
 ## 15. Future work / known limitations
 
+- **Alembic migrations.** The DB schema is currently created via `Base.metadata.create_all()` at boot and seeded from Python dicts. The next increment should add Alembic with an initial migration generated from the current models, swapping the boot-time `create_all` for `alembic upgrade head`. Until then, schema changes require dropping `backend/gad.db` to re-seed.
 - **Caching.** No server-side cache; every site click triggers fresh NWS calls. Add a TTL cache before scaling beyond a single user.
-- **Authoritative data tables.** `STATE_PROFILES`, `IECC_ZONES`, and `BUILDING_CODES` are hand-curated. They should ideally be sourced from FEMA NRI and ICC code-adoption feeds at build time.
+- **Authoritative data tables.** `State` rows are still hand-curated; the seed source could be replaced with a build-time pipeline pulling from FEMA NRI and ICC code-adoption feeds.
 - **Internationalization.** US-only by design (NWS coverage). Adding non-US support means swapping NWS for a global provider (e.g. Open-Meteo) and rebuilding the IBC table.
 - **Persisted comparisons.** Comparisons live only in `localStorage`; no account / sync.
 - **Retry queue.** When the user goes offline mid-flow, in-flight requests are dropped rather than queued (SRS §3.5.2 says "allow user to retry," and we do — by re-clicking — but a transparent queue would be friendlier).
@@ -424,3 +487,4 @@ Branch protection on `main` should require both matrix legs (Python 3.10 and 3.1
 | 2026-04-28 | Brandon Stewart | v1.3 — Expanded `HISTORICAL_EVENTS` from 10 states to 51 (all 50 + DC), ~87 hand-verified events with Wikipedia deep-links. Added DC to `STATE_PROFILES`, `IECC_ZONES`, `BUILDING_CODES`, and `STATE_NAME_TO_CODE` so DC clicks resolve as a region instead of falling back to defaults. New test `test_history_covers_all_us_states_and_dc` locks coverage and the four-table key parity. Suite now at 38 tests. |
 | 2026-04-28 | Brandon Stewart | v1.4 — Active weather alerts in the Alerts tab are now clickable, deep-linking to the relevant NWS safety/info page (`weather.gov/safety/<topic>`). Added `alert_info_url()` helper and `_ALERT_RULES` ordered substring-matching table to `backend/app.py`; `/api/weather` now ships a `url` field on each alert. New §9.1 documents the algorithm and precedence rules. Frontend reuses the `.event-link` styling under a shared `.alert-link` class. Suite now at 52 tests (13 new `TestAlertInfoUrl` cases + 1 url assertion in the weather happy path). |
 | 2026-04-28 | Brandon Stewart | v1.5 — Sidebar and map are now resizable via draggable splitters. CSS Grid layout driven by `--gad-sidebar-w` / `--gad-map-h` custom properties, sizes persisted to `localStorage` (`gad.layout`), keyboard-accessible (arrow keys), clamped to sensible bounds, hidden on narrow viewports. Map height changes trigger `map.invalidateSize()` so Leaflet redraws cleanly. Strengthens SRS §4.5 Usability traceability. Frontend-only change — backend untouched, suite still at 52 tests. |
+| 2026-04-28 | Brandon Stewart | v1.6 — All static reference data migrated from in-app Python dicts to a SQLite database accessed via the SQLAlchemy 2.0 ORM. New `backend/db/` package: `models.py` (State, HistoricalEvent, DecadalTrend, RiskCategory, ConstructionTip), `seed_data.py` (canonical Python source), `seed.py` (idempotent loader), `__init__.py` (engine + `init_db()`). `app.py` imports `init_db()` at module load and queries the DB in `/api/weather`, `/api/history`, and `normalize_state`. `RISK_CATEGORIES` / `CONSTRUCTION_TIPS` re-exported from `seed_data` so the PDF path and tests still use them as dicts. New §5.3 documents the data layer; §8 rewritten as a SQLAlchemy schema with an entity-relationship diagram; §10.1 lists SQLAlchemy 2.0.36; §14 documents the new `GAD_DATABASE_URL` env var; §15 names Alembic as the next increment. Suite still at 52 tests, passing on both the in-memory test DB and the auto-seeded file DB. |

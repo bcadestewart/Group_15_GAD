@@ -43,6 +43,20 @@ requests==2.31.0
 #  module on the frontend side and requires no extra dependency.)
 reportlab==4.0.7
 
+# ─── Database / ORM ─────────────────────────────────────────────────────────
+# Satisfies:
+#   §4.3 Maintainability — Reference data (state hazard profiles, IECC zones,
+#        building codes, historical events, decadal trends, risk categories,
+#        construction tips) lives in a SQLite database accessed via the
+#        SQLAlchemy ORM, replacing the previous Python-dict approach. This
+#        gives a single source of truth for all reference data, lets us
+#        version the schema with Alembic in a follow-up, and provides a
+#        natural extension point for user accounts and saved sites.
+# Storage backend: SQLite (file at backend/gad.db by default; in-memory
+# for tests; override with GAD_DATABASE_URL env var). Python stdlib `sqlite3`
+# bindings are used; no additional driver pin is required.
+SQLAlchemy==2.0.36
+
 # =============================================================================
 # Transitive dependencies (resolved automatically by pip; listed for audit)
 # =============================================================================
