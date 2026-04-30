@@ -51,6 +51,13 @@ The server boots on **http://localhost:5001** by default. Port 5001 (not the Fla
 Group_15_GAD/
 ├── .github/workflows/
 │   └── ci.yml                # GitHub Actions: ruff + pytest on every PR
+├── alembic.ini               # Alembic configuration (script_location, default URL)
+├── alembic/
+│   ├── env.py                # Alembic environment — imports models, reads
+│   │                         #   GAD_DATABASE_URL, supports passed-in connection
+│   ├── script.py.mako        # Migration template (used by autogenerate)
+│   └── versions/             # Migration revisions (commit these)
+│       └── 0001_initial_schema.py
 ├── backend/
 │   ├── app.py                # Flask server: routes, risk engine, PDF export
 │   ├── db/                   # SQLAlchemy data layer
@@ -81,11 +88,37 @@ Group_15_GAD/
 
 ## Database
 
-All static reference data (state hazard profiles, IECC zones, building codes, historical events, decadal trends, risk categories, construction tips) lives in a SQLite database accessed via the **SQLAlchemy 2.0 ORM**. The canonical Python representation is in `backend/db/seed_data.py`; the schema is in `backend/db/models.py`.
+All static reference data (state hazard profiles, IECC zones, building codes, historical events, decadal trends, risk categories, construction tips) lives in a SQLite database accessed via the **SQLAlchemy 2.0 ORM**. The canonical Python representation is in `backend/db/seed_data.py`; the schema is in `backend/db/models.py`; schema migrations are managed by **Alembic** under `alembic/versions/`.
 
-On the first app boot, `init_db()` creates the schema and seeds it from `seed_data` automatically — no manual migration step is required for a fresh checkout. The seed loader is idempotent, so subsequent boots are no-ops. The default DB file is `backend/gad.db` (gitignored). Override with the `GAD_DATABASE_URL` environment variable, e.g. `GAD_DATABASE_URL=sqlite:///:memory: python3 backend/app.py`. The test suite uses `sqlite:///:memory:` so CI never touches a file on disk.
+On every app boot, `init_db()` runs `alembic upgrade head` and then seeds reference data — both steps are idempotent, so a fresh checkout boots end-to-end with no manual migration step. The default DB file is `backend/gad.db` (gitignored). Override with the `GAD_DATABASE_URL` environment variable, e.g. `GAD_DATABASE_URL=sqlite:///:memory: python3 backend/app.py`. The test suite uses `sqlite:///:memory:` with a `StaticPool` so the migration and the test queries hit the same in-memory database.
 
-Schema versioning via Alembic is planned as a follow-up — see [DESIGN.md §15](./DESIGN.md#15-future-work--known-limitations).
+### Schema-change workflow
+
+When you change a model in `backend/db/models.py`:
+
+```bash
+# 1. Generate a new migration from the diff between models and the DB
+alembic revision --autogenerate -m "describe the change"
+
+# 2. Hand-review the generated file in alembic/versions/ — autogenerate is
+#    good but not perfect (occasionally misses indexes, FK names, or
+#    type changes). Edit if needed.
+
+# 3. Apply locally to verify
+alembic upgrade head
+
+# 4. Commit. The next app boot (locally and in CI) applies the migration
+#    automatically — you don't have to remember to run anything.
+```
+
+Useful Alembic CLI commands:
+
+```bash
+alembic current               # show the currently-applied revision
+alembic history --verbose     # full migration history
+alembic downgrade -1          # roll back one revision (use sparingly)
+alembic upgrade head --sql    # print SQL without running (review-only)
+```
 
 ---
 

@@ -4,8 +4,8 @@
 | ---------------- | -------------------------------------------------- |
 | Project          | Geospatial Architecture Database (GAD)             |
 | Course           | CS 4398 — Software Engineering, Group 15           |
-| Document version | 1.6                                                |
-| Last updated     | 2026-04-28                                         |
+| Document version | 1.7                                                |
+| Last updated     | 2026-04-30                                         |
 | Status           | Living document — update with relevant code changes |
 | Companion docs   | [README.md](./README.md), [Group15SRS.html](./Group15SRS.html) |
 
@@ -116,14 +116,20 @@ External libraries (loaded via CDN, not bundled): Leaflet 1.9.4, Chart.js 4.4.1,
 
 `reportlab` is **lazy-imported** inside the export handler so the rest of the app can boot even when reportlab is not installed.
 
-### 5.3 Data layer (`backend/db/`)
+### 5.3 Data layer (`backend/db/` + `alembic/`)
 
-| File              | Responsibility                                                                                                  |
-| ----------------- | --------------------------------------------------------------------------------------------------------------- |
-| `__init__.py`     | SQLAlchemy engine + `SessionLocal` factory + `get_session()` context manager + `init_db()` (create_all + seed). DB URL comes from `GAD_DATABASE_URL` (default `sqlite:///backend/gad.db`; tests use `sqlite:///:memory:` with `StaticPool`). |
-| `models.py`       | SQLAlchemy 2.0 typed declarative models: `State`, `HistoricalEvent`, `DecadalTrend`, `RiskCategory`, `ConstructionTip`. See §8 for the full schema. |
-| `seed_data.py`    | The canonical Python representation of all reference data — the same dicts that previously lived in `app.py` (`STATE_PROFILES`, `IECC_ZONES`, `BUILDING_CODES`, `HISTORICAL_EVENTS`, `DECADAL_TRENDS`, `RISK_CATEGORIES`, `CONSTRUCTION_TIPS`, `STATE_NAME_TO_CODE`, `DEFAULT_PROFILE`, `DEFAULT_TRENDS`). Adding a new state or event only requires editing this file; the seed loader picks it up on the next boot. |
-| `seed.py`         | `seed_database(session)` — idempotent loader that walks the `seed_data` dicts and inserts rows. Short-circuits if the `states` table already has rows, so it's safe to call on every app boot. |
+| File                              | Responsibility                                                                                                  |
+| --------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `backend/db/__init__.py`          | SQLAlchemy engine + `SessionLocal` factory + `get_session()` context manager + `init_db()` (`alembic upgrade head` then seed). DB URL comes from `GAD_DATABASE_URL` (default `sqlite:///backend/gad.db`; tests use `sqlite:///:memory:` with `StaticPool`). |
+| `backend/db/models.py`            | SQLAlchemy 2.0 typed declarative models: `State`, `HistoricalEvent`, `DecadalTrend`, `RiskCategory`, `ConstructionTip`. See §8 for the full schema. |
+| `backend/db/seed_data.py`         | The canonical Python representation of all reference data. Adding a new state or event only requires editing this file; the seed loader picks it up on the next boot. |
+| `backend/db/seed.py`              | `seed_database(session)` — idempotent loader that walks the `seed_data` dicts and inserts rows. Short-circuits if the `states` table already has rows, so it's safe to call on every app boot. |
+| `alembic.ini`                     | Alembic configuration (script_location, default URL — overridden at runtime). |
+| `alembic/env.py`                  | Imports `db.models.Base`, reads `GAD_DATABASE_URL`, prefers a connection passed via `Config.attributes['connection']` over building its own engine. The latter is critical for in-memory SQLite tests where a separate engine would target a different `:memory:` database. |
+| `alembic/script.py.mako`          | Template for new migration files (`alembic revision --autogenerate`). |
+| `alembic/versions/`               | Committed migration revisions. Currently `0001_initial_schema` (creates all five tables + indexes). |
+
+**Boot sequence:** `init_db()` opens a transaction on the application's existing engine, stuffs the connection into `Config.attributes['connection']`, calls `alembic.command.upgrade(cfg, "head")`, and then runs `seed_database`. Both steps are idempotent — Alembic skips already-applied revisions and the seed loader short-circuits when `states` is non-empty.
 
 ---
 
@@ -360,6 +366,7 @@ The jitter is intentional: without it, every site within a state returns identic
 | requests   | 2.31.0  | NWS + Nominatim HTTP client                   | §3.1, §3.2, §3.5      |
 | reportlab  | 4.0.7   | Styled PDF generation                         | §3.3                  |
 | SQLAlchemy | 2.0.36  | ORM for all reference data (SQLite by default; override via `GAD_DATABASE_URL`) | §4.3 |
+| alembic    | 1.13.3  | Schema migrations — `init_db()` runs `alembic upgrade head` on every boot | §4.3 |
 
 ### 10.2 Development (Python, not required at runtime)
 
@@ -451,6 +458,21 @@ The `pause and retry` flow described in SRS §3.5.2 is implemented via the toast
 - `PORT` — server bind port (default 5001).
 - `GAD_DATABASE_URL` — SQLAlchemy connection URL. Default: `sqlite:///backend/gad.db`. The test suite uses `sqlite:///:memory:` so CI never writes a file. Production deployments could swap in Postgres without code changes (no SQLite-specific SQL is used).
 
+### Schema migrations
+
+The schema is versioned with Alembic. `init_db()` runs `alembic upgrade head` on every app boot, so deployments don't need a separate migration step. To author a new migration during development:
+
+```bash
+# 1. Edit backend/db/models.py
+# 2. Autogenerate the migration
+alembic revision --autogenerate -m "describe the change"
+# 3. Hand-review the file in alembic/versions/ (autogenerate has known
+#    blind spots: index renames, FK name changes, server-default changes).
+# 4. Commit. Next boot applies it automatically.
+```
+
+The `script.py.mako` template under `alembic/` produces files using modern Python typing syntax. `pyproject.toml` adds per-file ruff ignores under `alembic/versions/**/*.py` for the autogenerated boilerplate (`Union[X, None]`, trailing whitespace on the root `Revises:` line, unused imports) so generated migrations don't break CI without hand-editing.
+
 ### Continuous Integration
 
 `.github/workflows/ci.yml` runs on every push to `main` and every pull request:
@@ -466,7 +488,6 @@ Branch protection on `main` should require both matrix legs (Python 3.10 and 3.1
 
 ## 15. Future work / known limitations
 
-- **Alembic migrations.** The DB schema is currently created via `Base.metadata.create_all()` at boot and seeded from Python dicts. The next increment should add Alembic with an initial migration generated from the current models, swapping the boot-time `create_all` for `alembic upgrade head`. Until then, schema changes require dropping `backend/gad.db` to re-seed.
 - **Caching.** No server-side cache; every site click triggers fresh NWS calls. Add a TTL cache before scaling beyond a single user.
 - **Authoritative data tables.** `State` rows are still hand-curated; the seed source could be replaced with a build-time pipeline pulling from FEMA NRI and ICC code-adoption feeds.
 - **Internationalization.** US-only by design (NWS coverage). Adding non-US support means swapping NWS for a global provider (e.g. Open-Meteo) and rebuilding the IBC table.
@@ -488,3 +509,4 @@ Branch protection on `main` should require both matrix legs (Python 3.10 and 3.1
 | 2026-04-28 | Brandon Stewart | v1.4 — Active weather alerts in the Alerts tab are now clickable, deep-linking to the relevant NWS safety/info page (`weather.gov/safety/<topic>`). Added `alert_info_url()` helper and `_ALERT_RULES` ordered substring-matching table to `backend/app.py`; `/api/weather` now ships a `url` field on each alert. New §9.1 documents the algorithm and precedence rules. Frontend reuses the `.event-link` styling under a shared `.alert-link` class. Suite now at 52 tests (13 new `TestAlertInfoUrl` cases + 1 url assertion in the weather happy path). |
 | 2026-04-28 | Brandon Stewart | v1.5 — Sidebar and map are now resizable via draggable splitters. CSS Grid layout driven by `--gad-sidebar-w` / `--gad-map-h` custom properties, sizes persisted to `localStorage` (`gad.layout`), keyboard-accessible (arrow keys), clamped to sensible bounds, hidden on narrow viewports. Map height changes trigger `map.invalidateSize()` so Leaflet redraws cleanly. Strengthens SRS §4.5 Usability traceability. Frontend-only change — backend untouched, suite still at 52 tests. |
 | 2026-04-28 | Brandon Stewart | v1.6 — All static reference data migrated from in-app Python dicts to a SQLite database accessed via the SQLAlchemy 2.0 ORM. New `backend/db/` package: `models.py` (State, HistoricalEvent, DecadalTrend, RiskCategory, ConstructionTip), `seed_data.py` (canonical Python source), `seed.py` (idempotent loader), `__init__.py` (engine + `init_db()`). `app.py` imports `init_db()` at module load and queries the DB in `/api/weather`, `/api/history`, and `normalize_state`. `RISK_CATEGORIES` / `CONSTRUCTION_TIPS` re-exported from `seed_data` so the PDF path and tests still use them as dicts. New §5.3 documents the data layer; §8 rewritten as a SQLAlchemy schema with an entity-relationship diagram; §10.1 lists SQLAlchemy 2.0.36; §14 documents the new `GAD_DATABASE_URL` env var; §15 names Alembic as the next increment. Suite still at 52 tests, passing on both the in-memory test DB and the auto-seeded file DB. |
+| 2026-04-30 | Brandon Stewart | v1.7 — Schema migrations now managed by Alembic. New `alembic.ini` + `alembic/` (env.py, script.py.mako, versions/) at the repo root. Initial migration `0001_initial_schema` generated via autogenerate covers all 5 tables, both FKs (with `ondelete=CASCADE`), all 3 indexes (`ix_states_full_name` unique, `ix_construction_tips_hazard_key`, `ix_historical_events_state_code`). `init_db()` swapped from `Base.metadata.create_all()` to `alembic.command.upgrade(cfg, "head")`, passing the application's existing engine connection via `Config.attributes['connection']` so in-memory SQLite tests continue to work. `env.py` prefers that connection over building its own engine — solves the classic Alembic + `:memory:` trap. Suite still at 52 tests; CI verifies `alembic upgrade head` on a clean file DB recovers the same schema. New §5.3 entries for `alembic.ini` / `alembic/env.py` / `alembic/versions/`; §10.1 adds alembic 1.13.3; §14 documents the schema-change workflow; §15 drops Alembic from future work. |
