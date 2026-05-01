@@ -597,7 +597,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 ${riskLevel(d.scores[k]).icon} ${riskLevel(d.scores[k]).label}
               </span>
             </p>
-            <p class="overview-num">${d.scores[k]}/10</p>
+            <p class="overview-num">${fmtScore(d.scores[k])}/10</p>
           </div>`).join('')}
       </div>
     `;
@@ -734,13 +734,13 @@ document.addEventListener('DOMContentLoaded', () => {
                   <span aria-hidden="true">${RISK_ICONS[k]}</span>
                   <span>${RISK_LABELS[k]}</span>
                 </div>
-                <div class="risk-bar" role="progressbar" aria-valuenow="${d.scores[k]}"
+                <div class="risk-bar" role="progressbar" aria-valuenow="${fmtScore(d.scores[k])}"
                      aria-valuemin="0" aria-valuemax="10"
-                     aria-label="${RISK_LABELS[k]} risk: ${d.scores[k]} of 10, ${lvl.label}">
-                  <div class="risk-bar-fill" style="width:${d.scores[k] * 10}%; background:${lvl.color}"></div>
+                     aria-label="${RISK_LABELS[k]} risk: ${fmtScore(d.scores[k])} of 10, ${lvl.label}">
+                  <div class="risk-bar-fill" style="width:${Math.min(100, d.scores[k] * 10)}%; background:${lvl.color}"></div>
                 </div>
                 <span class="risk-pill" style="background:${lvl.color}20;color:${lvl.color}">
-                  ${lvl.icon} ${d.scores[k]}/10
+                  ${lvl.icon} ${fmtScore(d.scores[k])}/10
                 </span>
               </div>`;
           }).join('')}
@@ -814,7 +814,7 @@ document.addEventListener('DOMContentLoaded', () => {
               <span aria-hidden="true">${RISK_ICONS[k]}</span>
               <strong>${RISK_LABELS[k]}</strong>
               <span class="risk-pill" style="background:${lvl.color}20;color:${lvl.color};margin-left:auto">
-                ${lvl.icon} Risk ${v}/10
+                ${lvl.icon} Risk ${fmtScore(v)}/10
               </span>
             </div>
             <ul class="tips-list">
@@ -1008,7 +1008,7 @@ document.addEventListener('DOMContentLoaded', () => {
               <th scope="row"><span aria-hidden="true">${RISK_ICONS[k]}</span> ${RISK_LABELS[k]}</th>
               ${arr.map(loc => {
                 const lvl = riskLevel(loc.scores[k]);
-                return `<td><span class="risk-pill" style="background:${lvl.color}20;color:${lvl.color}">${loc.scores[k]}/10</span></td>`;
+                return `<td><span class="risk-pill" style="background:${lvl.color}20;color:${lvl.color}">${fmtScore(loc.scores[k])}/10</span></td>`;
               }).join('')}
             </tr>
           `).join('')}
@@ -1052,6 +1052,15 @@ document.addEventListener('DOMContentLoaded', () => {
   updateOnlineStatus();
 
   /* ─── Utilities ───────────────────────────────────────────────────────── */
+  function fmtScore(s) {
+    // Hazard scores are floats once FEMA NRI data is in play (state-level
+    // fallback gives ints). Display to at most one decimal so the
+    // overview tiles don't blow out with FEMA's full-precision percentile
+    // values like 9.929078014183975.
+    if (s == null || isNaN(s)) return '—';
+    const rounded = Math.round(s * 10) / 10;
+    return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
+  }
   function escapeHtml(s) {
     return String(s ?? '').replace(/[&<>"']/g, c => ({
       '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',

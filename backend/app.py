@@ -466,11 +466,21 @@ def export():
     ]))
     story.append(t)
 
-    # Risk table
+    # Risk table — round float scores (NRI data is float-valued) to 1
+    # decimal so the PDF doesn't blow out cells with 15-decimal floats.
+    def _fmt_score(s):
+        if s is None:
+            return '—'
+        try:
+            r = round(float(s), 1)
+        except (TypeError, ValueError):
+            return str(s)
+        return str(int(r)) if r == int(r) else f"{r:.1f}"
+
     story.append(Paragraph('Hazard Assessment', h2_style))
     rows = [['Category', 'Score (0-10)', 'Weight']]
     for k, v in RISK_CATEGORIES.items():
-        rows.append([v['label'], str(data.get('scores', {}).get(k, '—')),
+        rows.append([v['label'], _fmt_score(data.get('scores', {}).get(k)),
                      f"{int(v['weight']*100)}%"])
     t = Table(rows, colWidths=[3 * inch, 1.5 * inch, 1.5 * inch])
     t.setStyle(TableStyle([
@@ -495,7 +505,7 @@ def export():
         for k in active:
             story.append(Paragraph(
                 f"<b>{RISK_CATEGORIES[k]['label']}</b> "
-                f"<font color='#64748b'>(Risk: {scores[k]}/10)</font>", h2_style))
+                f"<font color='#64748b'>(Risk: {_fmt_score(scores[k])}/10)</font>", h2_style))
             for tip in CONSTRUCTION_TIPS.get(k, []):
                 story.append(Paragraph(f"• {tip}", body_style))
 
