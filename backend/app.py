@@ -31,6 +31,7 @@ from db.models import (  # noqa: E402
     Analysis,
     DecadalTrend,
     HistoricalEvent,
+    NRICounty,
     State,
 )
 from http_session import http  # noqa: E402
@@ -252,6 +253,12 @@ def weather():
         forecast_url = props.get('forecast')
         state = props.get('relativeLocation', {}).get('properties', {}).get('state', '')
 
+        # NWS returns the county zone as a URL like
+        # https://api.weather.gov/zones/county/FLC057. Extract the trailing
+        # zone id; we use it to look up the FEMA NRI county row.
+        county_url = props.get('county') or ''
+        nws_zone_id = county_url.rstrip('/').rsplit('/', 1)[-1] if county_url else ''
+
         # Fallback state via reverse geocoding (returns full state name)
         if not state:
             try:
@@ -301,17 +308,36 @@ def weather():
                         'url': alert_info_url(ap.get('event')),
                     })
 
-        # Risk scores: pull the per-state profile + climate zone + building
-        # code from the database in a single query. Falls back to the
-        # default profile / labels when the state is unknown.
+        # Risk scores: prefer FEMA NRI county-level data when we have a
+        # zone id from the NWS response and a corresponding row in the
+        # nri_counties table. Otherwise fall back to the state-level
+        # profile (or DEFAULT_PROFILE for unknown states). Climate zone
+        # and building code always come from the State row — those are
+        # state-level constructs and don't have a county-level equivalent.
+        county_row = None
+        county_name = None
+        risk_source = 'state-level baseline'
+
         with get_session() as db:
+            if nws_zone_id:
+                county_row = db.scalar(
+                    select(NRICounty).where(NRICounty.nws_zone_id == nws_zone_id)
+                )
             state_row = db.get(State, state) if state else None
-        if state_row:
+
+        if county_row:
+            profile = county_row.profile_dict()
+            county_name = county_row.county_name
+            risk_source = 'FEMA National Risk Index'
+        elif state_row:
             profile = state_row.profile_dict()
+        else:
+            profile = DEFAULT_PROFILE
+
+        if state_row:
             climate_zone = state_row.iecc_zone
             building_code_label = state_row.building_code
         else:
-            profile = DEFAULT_PROFILE
             climate_zone = 'N/A'
             building_code_label = 'Consult local jurisdiction'
 
@@ -328,6 +354,8 @@ def weather():
             'state':       state,
             'climateZone': climate_zone,
             'buildingCode': building_code_label,
+            'countyName':  county_name,
+            'riskSource':  risk_source,
         }
 
         # Cache the response for the next ~5 minutes so repeat clicks

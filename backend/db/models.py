@@ -235,3 +235,80 @@ class Analysis(Base):
             f"<Analysis #{self.id} {self.state or '??'} "
             f"({self.lat:.2f},{self.lon:.2f}) composite={self.composite}>"
         )
+
+
+# ─── FEMA National Risk Index — county-level reference data ────────────────
+
+
+class NRICounty(Base):
+    """One row per US county, sourced from the FEMA National Risk Index
+    (NRI). Provides county-level hazard scores that supersede the
+    state-level rough averages in the `states` table when available.
+
+    Score scale: NRI publishes risk scores on a 0–100 percentile scale;
+    we normalize to the same 0–10 scale used elsewhere (state profiles,
+    composite formula) by dividing by 10. The composite score in the
+    `risk_score` column stays on the 0–100 scale to preserve the
+    standard NRI presentation.
+
+    Hazard mapping from FEMA's 18 NRI categories to our 7:
+        hurricane → HRCN
+        tornado   → TRND
+        flood     → max(CFLD, RFLD)        # Coastal + Riverine
+        winter    → max(WNTW, ISTM, CWAV)  # Winter Weather + Ice Storm + Cold Wave
+        heat      → HWAV
+        seismic   → EQKE
+        wildfire  → WFIR
+
+    Source URL (download with `curl` to backend/data/nri_counties.csv):
+        https://hazards.fema.gov/nri/data/NRI_Table_Counties.csv
+
+    SRS traceability:
+        §3.4 Assessments of Environment Constraints — replaces the
+        hand-curated state-level scores with authoritative county-level
+        FEMA data when a county can be resolved from the NWS response.
+    """
+
+    __tablename__ = "nri_counties"
+
+    # 5-digit FIPS code: state (2) + county (3). E.g. "12057" = Hillsborough
+    # County, FL. PK because it's the universal identifier in FEMA data.
+    county_fips: Mapped[str] = mapped_column(String(5), primary_key=True)
+    # NWS county zone id (e.g. "FLC057") — secondary index because the
+    # /api/weather route extracts this from the NWS points response.
+    nws_zone_id: Mapped[str | None] = mapped_column(String(8), index=True, nullable=True)
+
+    state_code:  Mapped[str] = mapped_column(String(2), index=True)
+    county_name: Mapped[str] = mapped_column(String(64))
+    population:  Mapped[int] = mapped_column(Integer, default=0)
+
+    # Composite NRI score on the 0–100 percentile scale, plus the verbal
+    # rating ("Very Low" through "Very High").
+    risk_score:  Mapped[float]    = mapped_column(Float, default=0.0)
+    risk_rating: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+    # Per-hazard scores normalized to our 0–10 scale (FEMA's 0–100 / 10).
+    hurricane: Mapped[float] = mapped_column(Float, default=0.0)
+    tornado:   Mapped[float] = mapped_column(Float, default=0.0)
+    flood:     Mapped[float] = mapped_column(Float, default=0.0)
+    winter:    Mapped[float] = mapped_column(Float, default=0.0)
+    heat:      Mapped[float] = mapped_column(Float, default=0.0)
+    seismic:   Mapped[float] = mapped_column(Float, default=0.0)
+    wildfire:  Mapped[float] = mapped_column(Float, default=0.0)
+
+    def profile_dict(self) -> dict[str, float]:
+        """Per-hazard scores in the dict shape /api/weather expects.
+        Matches `State.profile_dict()` so the route can swap between them
+        transparently."""
+        return {
+            "hurricane": self.hurricane,
+            "tornado":   self.tornado,
+            "flood":     self.flood,
+            "winter":    self.winter,
+            "heat":      self.heat,
+            "seismic":   self.seismic,
+            "wildfire":  self.wildfire,
+        }
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return f"<NRICounty {self.county_fips} {self.county_name}, {self.state_code}>"

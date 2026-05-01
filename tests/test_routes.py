@@ -593,6 +593,107 @@ def test_cache_stats_reflects_hits_and_misses(
     assert body["hit_rate"] == 0.5
 
 
+def test_weather_returns_nri_county_data_when_zone_id_resolves(
+    client, mocker, fake_response,
+    nws_point_payload, nws_forecast_payload, nws_alerts_payload,
+):
+    """SRS §3.4 — when the NWS points response carries a county zone id
+    that matches an nri_counties row, /api/weather returns the FEMA
+    NRI county-level scores and labels the response accordingly."""
+    def _router(url, *args, **kwargs):
+        if "alerts/active" in url:
+            return fake_response(json_data=nws_alerts_payload)
+        if "forecast" in url:
+            return fake_response(json_data=nws_forecast_payload)
+        if "/points/" in url:
+            return fake_response(json_data=nws_point_payload)
+        return fake_response(json_data={}, ok=False, status_code=404)
+
+    mocker.patch("app.http.get", side_effect=_router)
+
+    res = client.get("/api/weather?lat=27.9506&lon=-82.4572")
+    assert res.status_code == 200
+    body = res.get_json()
+
+    # Hillsborough, FL is in our sample CSV — county_name + NRI source
+    # should both be populated.
+    assert body["countyName"] == "Hillsborough"
+    assert body["riskSource"] == "FEMA National Risk Index"
+    # Hurricane score for Hillsborough in the sample CSV is 84.5/10 = 8.45;
+    # after jitter (±1) it's still in [7, 10]. Looser bound so the test
+    # doesn't break if jitter changes.
+    assert body["scores"]["hurricane"] >= 7
+
+
+def test_weather_falls_back_to_state_when_no_nri_match(
+    client, mocker, fake_response,
+    nws_forecast_payload, nws_alerts_payload,
+):
+    """If the NWS points response carries a zone id that's NOT in
+    nri_counties (e.g. a county we don't have NRI data for), the route
+    falls back to State-level scores and labels riskSource accordingly."""
+    point_payload_unknown_county = {
+        "properties": {
+            "forecast": "https://api.weather.gov/gridpoints/TBW/52,68/forecast",
+            "county":   "https://api.weather.gov/zones/county/FLC999",  # not in sample
+            "relativeLocation": {"properties": {"state": "FL"}},
+        }
+    }
+
+    def _router(url, *args, **kwargs):
+        if "alerts/active" in url:
+            return fake_response(json_data=nws_alerts_payload)
+        if "forecast" in url:
+            return fake_response(json_data=nws_forecast_payload)
+        if "/points/" in url:
+            return fake_response(json_data=point_payload_unknown_county)
+        return fake_response(json_data={}, ok=False, status_code=404)
+
+    mocker.patch("app.http.get", side_effect=_router)
+
+    res = client.get("/api/weather?lat=27.9506&lon=-82.4572")
+    assert res.status_code == 200
+    body = res.get_json()
+
+    assert body["countyName"] is None
+    assert body["riskSource"] == "state-level baseline"
+    # State-level FL profile has hurricane=9 — still high after jitter.
+    assert body["scores"]["hurricane"] >= 7
+
+
+def test_nri_loader_parses_sample_csv():
+    """Direct test of the NRI loader against the sample CSV bundled in
+    the repo. Verifies score normalization (FEMA 0-100 → our 0-10),
+    zone-id construction, and the Coastal/Riverine flood max."""
+
+    from db import get_session
+    from db.models import NRICounty
+    from sqlalchemy import select
+
+    # The seed already populated nri_counties from the sample. Sanity check
+    # a couple of rows.
+    with get_session() as db:
+        hillsborough = db.scalar(
+            select(NRICounty).where(NRICounty.county_fips == "12057")
+        )
+        miami = db.scalar(
+            select(NRICounty).where(NRICounty.county_fips == "12086")
+        )
+
+    assert hillsborough is not None
+    assert hillsborough.county_name == "Hillsborough"
+    assert hillsborough.state_code == "FL"
+    assert hillsborough.nws_zone_id == "FLC057"
+    # FEMA hurricane score 84.5 → normalized to 8.45
+    assert abs(hillsborough.hurricane - 8.45) < 1e-6
+    # Flood is max(CFLD=68.2, RFLD=52.7) = 68.2 → 6.82
+    assert abs(hillsborough.flood - 6.82) < 1e-6
+
+    assert miami is not None
+    # Miami-Dade hurricane 93.8 → 9.38
+    assert abs(miami.hurricane - 9.38) < 1e-6
+
+
 def test_retry_session_recovers_from_one_transient_503(client, mocker):
     """If NWS returns a transient 503 once and a success on retry, the
     user shouldn't see the 503 — the urllib3 Retry adapter handles it.

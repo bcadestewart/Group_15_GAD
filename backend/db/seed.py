@@ -4,7 +4,9 @@ Idempotent seed loader for GAD reference data.
 `seed_database(session)` reads the canonical Python dicts in
 `db/seed_data.py` and inserts them into the database. The `states` row
 count is checked first — if non-zero, the function returns immediately,
-so calling it on every app boot is safe.
+so calling it on every app boot is safe. After the reference seed runs,
+the FEMA NRI loader is invoked to populate the `nri_counties` table from
+whichever CSV is present in `backend/data/`.
 
 Schema mapping (also documented in DESIGN.md §8):
 
@@ -17,8 +19,12 @@ Schema mapping (also documented in DESIGN.md §8):
     seed_data.HISTORICAL_EVENTS →  historical_events rows
     seed_data.DECADAL_TRENDS    →  decadal_trends rows (with DEFAULT_TRENDS
                                   filling in for states without curated data)
+    backend/data/nri_*.csv      →  nri_counties rows (FEMA NRI loader; see
+                                  db/nri_loader.py)
 """
 from __future__ import annotations
+
+from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -31,6 +37,7 @@ from .models import (
     RiskCategory,
     State,
 )
+from .nri_loader import maybe_load_nri
 
 
 def seed_database(session: Session) -> None:
@@ -82,3 +89,14 @@ def seed_database(session: Session) -> None:
             session.add(DecadalTrend(state_code=code, decade=decade, count=count))
 
     session.commit()
+
+    # ─── FEMA NRI counties (best-effort: works against the bundled sample
+    #     CSV out of the box, picks up the full FEMA download when present)
+    data_dir = Path(__file__).resolve().parent.parent / "data"
+    try:
+        maybe_load_nri(session, data_dir)
+    except Exception:
+        # Don't let an NRI loader hiccup break the rest of the seed.
+        # Routes already fall back to State-level scores when nri_counties
+        # is empty.
+        session.rollback()
