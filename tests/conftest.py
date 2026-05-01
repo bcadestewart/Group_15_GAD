@@ -74,10 +74,15 @@ def nominatim_search_payload():
 
 @pytest.fixture
 def nws_point_payload():
-    """A representative response from NWS /points/{lat,lon}."""
+    """A representative response from NWS /points/{lat,lon}.
+
+    The `county` URL trailing segment ('FLC057') is the NWS county zone id
+    for Hillsborough County, FL — it lets /api/weather look up the FEMA
+    NRI row by `nws_zone_id`."""
     return {
         "properties": {
             "forecast": "https://api.weather.gov/gridpoints/TBW/52,68/forecast",
+            "county":   "https://api.weather.gov/zones/county/FLC057",
             "relativeLocation": {
                 "properties": {"city": "Tampa", "state": "FL"},
             },

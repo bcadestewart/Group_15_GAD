@@ -23,3 +23,10 @@ backend/gad.db
 backend/gad.db-journal
 backend/gad.db-wal
 backend/gad.db-shm
+
+# Full FEMA NRI download (~3 MB; curled or browser-downloaded locally per
+# README). The committed nri_sample.csv is enough for tests + dev; see
+# README "FEMA National Risk Index data" section for the download steps.
+# Both filenames the loader recognizes are excluded.
+backend/data/nri_counties.csv
+backend/data/NRI_Table_Counties.csv

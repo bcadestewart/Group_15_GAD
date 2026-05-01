@@ -4,7 +4,7 @@
 | ---------------- | -------------------------------------------------- |
 | Project          | Geospatial Architecture Database (GAD)             |
 | Course           | CS 4398 — Software Engineering, Group 15           |
-| Document version | 1.9                                                |
+| Document version | 1.10                                               |
 | Last updated     | 2026-05-01                                         |
 | Status           | Living document — update with relevant code changes |
 | Companion docs   | [README.md](./README.md), [Group15SRS.html](./Group15SRS.html) |
@@ -131,7 +131,9 @@ Logical sections inside `app.py`:
 | `backend/db/__init__.py`          | SQLAlchemy engine + `SessionLocal` factory + `get_session()` context manager + `init_db()` (`alembic upgrade head` then seed). DB URL comes from `GAD_DATABASE_URL` (default `sqlite:///backend/gad.db`; tests use `sqlite:///:memory:` with `StaticPool`). |
 | `backend/db/models.py`            | SQLAlchemy 2.0 typed declarative models: `State`, `HistoricalEvent`, `DecadalTrend`, `RiskCategory`, `ConstructionTip`. See §8 for the full schema. |
 | `backend/db/seed_data.py`         | The canonical Python representation of all reference data. Adding a new state or event only requires editing this file; the seed loader picks it up on the next boot. |
-| `backend/db/seed.py`              | `seed_database(session)` — idempotent loader that walks the `seed_data` dicts and inserts rows. Short-circuits if the `states` table already has rows, so it's safe to call on every app boot. |
+| `backend/db/seed.py`              | `seed_database(session)` — idempotent loader that walks the `seed_data` dicts and inserts rows. Short-circuits if the `states` table already has rows, so it's safe to call on every app boot. After the reference seed, calls `nri_loader.maybe_load_nri()` to populate `nri_counties`. |
+| `backend/db/nri_loader.py`        | FEMA National Risk Index CSV loader. `maybe_load_nri(session, data_dir)` prefers `nri_counties.csv` (full FEMA download), falls back to `nri_sample.csv` (15 representative rows committed to the repo), no-ops when neither exists. `parse_nri_row()` is a pure function exposed for tests; normalizes FEMA's 0–100 hazard scores to our 0–10 internal scale and computes derived hazard categories (flood = max(coastal, riverine), winter = max(winter weather, ice storm, cold wave)). |
+| `backend/data/nri_sample.csv`     | 15 representative counties hand-typed from public NRI documentation so a fresh checkout boots end-to-end without a network round-trip. Replaced by the full FEMA CSV when present (gitignored at `nri_counties.csv`). |
 | `alembic.ini`                     | Alembic configuration (script_location, default URL — overridden at runtime). |
 | `alembic/env.py`                  | Imports `db.models.Base`, reads `GAD_DATABASE_URL`, prefers a connection passed via `Config.attributes['connection']` over building its own engine. The latter is critical for in-memory SQLite tests where a separate engine would target a different `:memory:` database. |
 | `alembic/script.py.mako`          | Template for new migration files (`alembic revision --autogenerate`). |
@@ -329,9 +331,25 @@ erDiagram
         int composite "0-100"
         int alert_count
     }
+    nri_counties {
+        string county_fips PK "5-digit (state+county)"
+        string nws_zone_id "indexed (e.g. FLC057)"
+        string state_code "indexed"
+        string county_name
+        int population
+        float risk_score "0-100 NRI composite"
+        string risk_rating
+        float hurricane "0-10"
+        float tornado "0-10"
+        float flood "0-10"
+        float winter "0-10"
+        float heat "0-10"
+        float seismic "0-10"
+        float wildfire "0-10"
+    }
 ```
 
-The reference tables (states, historical_events, decadal_trends, risk_categories, construction_tips) are populated once by `db.seed.seed_database()` and never written to at runtime. The **`analyses` table** (SRS §3.6) is the only writable entity — every successful `/api/weather` call appends one row capturing anonymous request metadata. There is intentionally no foreign key from `analyses.state` to `states.code`: state lookups occasionally return null (NWS coverage gaps), and we want to record those analyses without falling back to a sentinel.
+The reference tables (states, historical_events, decadal_trends, risk_categories, construction_tips, nri_counties) are populated once by `db.seed.seed_database()` and never written to at runtime. The **`analyses` table** (SRS §3.6) is the only writable entity — every successful `/api/weather` call appends one row capturing anonymous request metadata. There is intentionally no foreign key from `analyses.state` to `states.code`: state lookups occasionally return null (NWS coverage gaps), and we want to record those analyses without falling back to a sentinel.
 
 The state table consolidates four prior dicts (`STATE_PROFILES` + `IECC_ZONES` + `BUILDING_CODES` + `STATE_NAME_TO_CODE`) into a single row per state; `normalize_state` uses an `OR` query against `code` and `full_name` to accept either form. `RiskCategory` and `ConstructionTip` keep their `sort_order` columns so the original ordering of the Python lists (which the PDF export and frontend rely on) survives the round-trip through the database.
 
@@ -362,6 +380,26 @@ Most-common IECC zone per state, expressed as either a single zone (`"3"`) or a 
 ### 8.4 Building codes (`BUILDING_CODES`)
 
 The currently adopted IBC year per state, with state-specific override labels for jurisdictions that adopt a derived code (`FBC 2023`, `CBC 2022`).
+
+### 8.7 FEMA NRI counties (`NRICounty`)
+
+County-level hazard scores from the FEMA National Risk Index. One row per US county; `nri_counties.csv` bundled by FEMA covers ~3,200 counties. The 15-county sample committed at `backend/data/nri_sample.csv` is sufficient to demo the lookup path; the full national dataset is gitignored and downloaded once via `curl` (see README).
+
+Score normalization: FEMA publishes per-hazard scores on a 0–100 percentile scale. We divide by 10 in the loader so they line up with the existing 0–10 scale used by `State` profiles, `composite_from_scores()`, and `jitter()`. The composite `risk_score` column keeps the 0–100 NRI scale to preserve the standard presentation.
+
+Hazard mapping from FEMA's 18 NRI categories to our 7:
+
+| Our hazard | FEMA columns                  | Aggregation |
+| ---------- | ----------------------------- | ----------- |
+| hurricane  | HRCN_RISKS                    | passthrough |
+| tornado    | TRND_RISKS                    | passthrough |
+| flood      | CFLD_RISKS, RFLD_RISKS        | max         |
+| winter     | WNTW_RISKS, ISTM_RISKS, CWAV_RISKS | max    |
+| heat       | HWAV_RISKS                    | passthrough |
+| seismic    | EQKE_RISKS                    | passthrough |
+| wildfire   | WFIR_RISKS                    | passthrough |
+
+`/api/weather` extracts `nws_zone_id` from the NWS points response (URL like `/zones/county/FLC057` → `FLC057`) and queries `nri_counties` by that key. On hit, the response includes `countyName` and `riskSource: "FEMA National Risk Index"`. On miss, falls back to the State row and labels `riskSource: "state-level baseline"` so the UI can show appropriate attribution.
 
 ### 8.6 Audit log (`Analysis`)
 
@@ -508,7 +546,7 @@ The `pause and retry` flow described in SRS §3.5.2 is implemented via the toast
 | §3.3 Data Export                      | PDF / CSV export                             | `/api/export` → reportlab; CSV via `app.js` `Blob` download.                          |
 | §3.3.1 UC1: recommendations export    | Construction tips → file                     | PDF "Construction Recommendations" page; CSV `tips` rows.                             |
 | §3.3.2 UC2: weather history export    | Forecast + history → file                    | PDF "7-Day Forecast" table; CSV `forecast` and `history` rows.                        |
-| §3.4 Risk + recommendations           | Compute score, list recs                     | `composite_from_scores`, `RISK_CATEGORIES`, `CONSTRUCTION_TIPS`.                      |
+| §3.4 Risk + recommendations           | Compute score, list recs                     | `composite_from_scores`, `RISK_CATEGORIES`, `CONSTRUCTION_TIPS`. County-level scores from FEMA NRI (`nri_counties` table; see §8.7) when the NWS county zone id resolves; state-level fallback otherwise. |
 | §3.5.1 UC1: failure to find address   | Error message + retry                        | `/api/search` 503 + frontend toast; user remains on input.                            |
 | §3.5.2 UC2: no internet               | Notify and pause                             | `online`/`offline` browser events drive `#offlineBanner`.                             |
 | §3.6 Analytics & Audit Log            | Anonymous metadata per analysis              | `Analysis` model (§8.6); `app._record_analysis()` writes after every `/api/weather`. |
@@ -570,7 +608,8 @@ Branch protection on `main` should require both matrix legs (Python 3.10 and 3.1
 - **Distributed cache.** The current `TTLCache` is in-process — fine for a single Flask worker, but a Gunicorn `-w 4` deployment would have four independent caches. A Redis-backed `TTLCache` swap (or even a shared file-based cache) would unify hit rates across workers and survive restarts.
 - **Parallel upstream calls.** `/api/weather` calls NWS three times sequentially (point → forecast → alerts). The forecast URL depends on the points response, but the alerts call only needs the resolved state — it could run concurrently with the forecast call to cut worst-case latency another ~30%. Worth doing once we add either `requests-futures` or migrate to `httpx` async.
 - **Admin UI on top of `/api/analyses`.** The audit-log read endpoints (§7.6, §7.7) ship without a frontend. A small admin dashboard page that polls `/stats` and renders a recent-activity table on top of `/recent` would be the next increment, ideally behind authentication.
-- **Authoritative data tables.** `State` rows are still hand-curated; the seed source could be replaced with a build-time pipeline pulling from FEMA NRI and ICC code-adoption feeds.
+- **Authoritative IECC + IBC data.** Per-state IECC zones and adopted IBC year are still hand-curated in `seed_data.py`. Could be replaced with a build-time pipeline pulling from ICC code-adoption feeds. (NRI hazard scores already moved off hand-curation in v1.10.)
+- **NRI refresh automation.** The full FEMA NRI CSV is downloaded manually via `curl` per the README. A scheduled CI job that re-downloads + commits the file when FEMA publishes a new release would close the staleness gap.
 - **Internationalization.** US-only by design (NWS coverage). Adding non-US support means swapping NWS for a global provider (e.g. Open-Meteo) and rebuilding the IBC table.
 - **Persisted comparisons.** Comparisons live only in `localStorage`; no account / sync.
 - **Retry queue.** When the user goes offline mid-flow, in-flight requests are dropped rather than queued (SRS §3.5.2 says "allow user to retry," and we do — by re-clicking — but a transparent queue would be friendlier).
@@ -593,3 +632,4 @@ Branch protection on `main` should require both matrix legs (Python 3.10 and 3.1
 | 2026-04-30 | Brandon Stewart | v1.7 — Schema migrations now managed by Alembic. New `alembic.ini` + `alembic/` (env.py, script.py.mako, versions/) at the repo root. Initial migration `0001_initial_schema` generated via autogenerate covers all 5 tables, both FKs (with `ondelete=CASCADE`), all 3 indexes (`ix_states_full_name` unique, `ix_construction_tips_hazard_key`, `ix_historical_events_state_code`). `init_db()` swapped from `Base.metadata.create_all()` to `alembic.command.upgrade(cfg, "head")`, passing the application's existing engine connection via `Config.attributes['connection']` so in-memory SQLite tests continue to work. `env.py` prefers that connection over building its own engine — solves the classic Alembic + `:memory:` trap. Suite still at 52 tests; CI verifies `alembic upgrade head` on a clean file DB recovers the same schema. New §5.3 entries for `alembic.ini` / `alembic/env.py` / `alembic/versions/`; §10.1 adds alembic 1.13.3; §14 documents the schema-change workflow; §15 drops Alembic from future work. |
 | 2026-05-01 | Brandon Stewart | v1.8 — Analytics & audit log (SRS §3.6). New `Analysis` model + `analyses` table (id, created_at indexed, lat, lon, state indexed nullable, composite, alert_count). Migration `0002_add_analyses_table` generated via autogenerate. `app._record_analysis()` writes one row after every `/api/weather` response with explicit best-effort try/except — tests verify a `Session.commit` failure produces no user-facing 5xx. Two new read endpoints: `GET /api/analyses/recent` (paginated, limit≤100) and `GET /api/analyses/stats` (totals + 24h count + by_state + by_day for the last 14 days). Suite expanded from 52 → 60 tests. New §7.6/§7.7 endpoint specs, §8 ER diagram includes `analyses`, new §8.6 documents the privacy posture and best-effort-write contract, §13 traceability rows for §3.6/§3.6.1/§3.6.2, §15 future work names an admin UI on top of these endpoints. SRS amendment in this same PR adds the §3.6 section and a TOC entry; SRS revision-history block notes the addition. |
 | 2026-05-01 | Brandon Stewart | v1.9 — Weather-pipeline resilience (response to a real upstream-timeout incident reported on 2026-05-01 from Kansas-area clicks). New `backend/http_session.py` mounts a `urllib3` `Retry` adapter (total=2, backoff_factor=0.5, status_forcelist=(502,503,504)) on a shared `requests.Session`; all outbound calls in `app.py` migrated from `requests.get(...)` to `http.get(...)`. New `backend/cache.py` provides a thread-safe `TTLCache` (OrderedDict + Lock, LRU eviction, hit/miss counters); `/api/weather` now caches responses for 5 minutes keyed by `(round(lat,3), round(lon,3))` (~110m cell). Cache hits still write an Analysis row so the audit log remains accurate. New `GET /api/cache/stats` endpoint surfaces the cache hit-rate. Suite expanded 60 → 66 tests (cache miss-then-hit, nearby-coords-share-cell, TTL expiry via `time.monotonic` patch, `/api/cache/stats` shape + counters, retry adapter policy assertion). New conftest autouse fixture clears the cache between tests so ordering is irrelevant. New §5.2 module table includes `http_session.py` and `cache.py`; new §7.8 documents `/api/cache/stats`; §12 + §13 NFR/traceability rows for §4.1 cite both retries and caching; §15 drops the standalone "caching" item and adds two new items (distributed cache, parallel upstream calls). |
+| 2026-05-01 | Brandon Stewart | v1.10 — FEMA National Risk Index integration. New `NRICounty` model + migration `0003_add_nri_counties_table` (county_fips PK, nws_zone_id indexed, state_code indexed, county_name, population, risk_score 0-100, risk_rating, plus 7 normalized 0-10 hazard scores). New `backend/db/nri_loader.py` parses FEMA's published CSV schema (STATEFIPS, COUNTYFIPS, HRCN_RISKS, etc.), normalizes 0-100 → 0-10, computes derived categories (flood = max(CFLD, RFLD); winter = max(WNTW, ISTM, CWAV)). 15-county sample committed at `backend/data/nri_sample.csv`; full ~3,200-county FEMA download is gitignored at `nri_counties.csv` and pulled via the curl command documented in README. `/api/weather` extracts the NWS county zone id from the points response and prefers NRI county scores when found, falling back to the existing `State`-level profile otherwise. Response gains `countyName` + `riskSource` fields. Frontend shows the county name in the location card and a "Source: FEMA National Risk Index" attribution under the composite-risk dial. Suite expanded 66 → 69 tests (NRI county hit, state-level fallback when the zone id is unknown, loader normalization sanity). New §5.3 entries for `nri_loader.py` + `nri_sample.csv`; §8 ER diagram includes `nri_counties`; new §8.7 documents the score normalization and FEMA → GAD hazard mapping; §10.2 lists FEMA NRI as a data source; §13 traceability for §3.4 cites the county-level upgrade; §15 drops authoritative-FEMA-data from future work and adds NRI refresh automation as the next increment. No SRS amendment needed — this strengthens §3.4 implementation without changing the contract. |

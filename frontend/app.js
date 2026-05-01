@@ -523,7 +523,7 @@ document.addEventListener('DOMContentLoaded', () => {
       <div class="card">
         <p class="section-label">Location</p>
         <p class="loc-name">${escapeHtml(d.display)}</p>
-        <p class="loc-coords">${d.lat.toFixed(4)}°, ${d.lon.toFixed(4)}° · ${d.state || '—'}</p>
+        <p class="loc-coords">${d.lat.toFixed(4)}°, ${d.lon.toFixed(4)}° · ${d.state || '—'}${d.countyName ? ` · ${escapeHtml(d.countyName)} County` : ''}</p>
       </div>
 
       ${obs.temperature != null ? `
@@ -547,6 +547,7 @@ document.addEventListener('DOMContentLoaded', () => {
              aria-label="Composite risk score: ${d.composite} of 100, ${compLevel.label}">
           <div class="risk-bar-fill" style="width:${d.composite}%; background:${compLevel.color}"></div>
         </div>
+        ${d.riskSource ? `<p class="data-source">Source: ${escapeHtml(d.riskSource)}</p>` : ''}
       </div>
 
       <div class="card meta-card">
