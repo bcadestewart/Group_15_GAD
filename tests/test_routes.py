@@ -661,37 +661,94 @@ def test_weather_falls_back_to_state_when_no_nri_match(
     assert body["scores"]["hurricane"] >= 7
 
 
-def test_nri_loader_parses_sample_csv():
-    """Direct test of the NRI loader against the sample CSV bundled in
-    the repo. Verifies score normalization (FEMA 0-100 → our 0-10),
-    zone-id construction, and the Coastal/Riverine flood max."""
-
+def test_nri_loader_seeded_some_counties():
+    """The seeder populated nri_counties from whatever CSV was present
+    (sample for fresh checkouts; the real FEMA download for users who
+    ran the curl command). Either way, the lookup table should contain
+    the well-known counties used elsewhere in the test suite, with
+    structurally-valid hazard scores. Specific score values are NOT
+    asserted here because they differ between the sample and the real
+    FEMA dataset — the dedicated parser test
+    (test_nri_loader_uses_correct_fema_column_names) covers
+    score-normalization correctness with synthetic data instead."""
     from db import get_session
     from db.models import NRICounty
     from sqlalchemy import select
 
-    # The seed already populated nri_counties from the sample. Sanity check
-    # a couple of rows.
     with get_session() as db:
         hillsborough = db.scalar(
             select(NRICounty).where(NRICounty.county_fips == "12057")
         )
-        miami = db.scalar(
-            select(NRICounty).where(NRICounty.county_fips == "12086")
-        )
 
-    assert hillsborough is not None
+    assert hillsborough is not None, "Hillsborough should be loaded by either sample or full CSV"
     assert hillsborough.county_name == "Hillsborough"
     assert hillsborough.state_code == "FL"
     assert hillsborough.nws_zone_id == "FLC057"
-    # FEMA hurricane score 84.5 → normalized to 8.45
-    assert abs(hillsborough.hurricane - 8.45) < 1e-6
-    # Flood is max(CFLD=68.2, RFLD=52.7) = 68.2 → 6.82
-    assert abs(hillsborough.flood - 6.82) < 1e-6
 
-    assert miami is not None
-    # Miami-Dade hurricane 93.8 → 9.38
-    assert abs(miami.hurricane - 9.38) < 1e-6
+    # Each per-hazard score should be in the normalized 0-10 range, regardless
+    # of whether the source CSV was the sample or the full FEMA dataset.
+    for hazard in ("hurricane", "tornado", "flood", "winter",
+                   "heat", "seismic", "wildfire"):
+        v = getattr(hillsborough, hazard)
+        assert isinstance(v, float), f"{hazard} should be a float, got {type(v)}"
+        assert 0.0 <= v <= 10.0, f"{hazard} out of [0,10]: {v}"
+
+    # Hillsborough is a Gulf-coast county; hurricane should be high in any
+    # reasonable risk dataset (sample = 8.45, real FEMA = ~9.9). Pin a
+    # generous lower bound so this passes against either.
+    assert hillsborough.hurricane > 5.0, (
+        f"Hillsborough hurricane should be high; got {hillsborough.hurricane}"
+    )
+
+
+def test_nri_loader_uses_correct_fema_column_names():
+    """Regression: FEMA NRI's inland-flooding column is `IFLD_RISKS` and
+    its earthquake column is `ERQK_RISKS`. Earlier loader code used
+    `RFLD_RISKS` and `EQKE_RISKS` (which don't exist in any FEMA CSV),
+    so flood was underestimated (only coastal counted) and seismic was
+    always zero. This test pins the parser against a synthetic row using
+    real FEMA column names."""
+    from db.nri_loader import parse_nri_row
+
+    row = {
+        "STATEFIPS":   "48",
+        "STATEABBRV":  "TX",
+        "COUNTYFIPS":  "201",
+        "STCOFIPS":    "48201",
+        "COUNTY":      "Harris",
+        "POPULATION":  "4726200",
+        "RISK_SCORE":  "99.9",
+        "RISK_RATNG":  "Very High",
+        # Real FEMA columns (the wrong ones the old loader used should
+        # have NO effect):
+        "HRCN_RISKS":  "100.0",
+        "TRND_RISKS":  "100.0",
+        "CFLD_RISKS":  "83.2",
+        "IFLD_RISKS":  "99.97",   # the column my old loader missed
+        "WNTW_RISKS":  "88.8",
+        "ISTM_RISKS":  "99.5",
+        "CWAV_RISKS":  "99.9",
+        "HWAV_RISKS":  "99.7",
+        "ERQK_RISKS":  "92.1",    # the column my old loader missed
+        "WFIR_RISKS":  "85.4",
+        # Old wrong names — values here SHOULD be ignored by the parser.
+        "RFLD_RISKS":  "0.0",
+        "EQKE_RISKS":  "0.0",
+    }
+
+    kwargs = parse_nri_row(row)
+
+    # Flood should be max(CFLD=83.2, IFLD=99.97) / 10 ≈ 9.997
+    assert kwargs["flood"] > 9.9, (
+        f"flood should pick up IFLD_RISKS=99.97; got {kwargs['flood']}"
+    )
+    # Seismic should be ERQK=92.1 / 10 = 9.21
+    assert kwargs["seismic"] > 9.0, (
+        f"seismic should pick up ERQK_RISKS=92.1; got {kwargs['seismic']}"
+    )
+    # And the unrelated hazards round through unchanged.
+    assert kwargs["hurricane"] == 10.0
+    assert kwargs["tornado"] == 10.0
 
 
 def test_nri_loader_does_not_truncate_on_invalid_input(tmp_path):

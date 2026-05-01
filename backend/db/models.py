@@ -254,10 +254,10 @@ class NRICounty(Base):
     Hazard mapping from FEMA's 18 NRI categories to our 7:
         hurricane → HRCN
         tornado   → TRND
-        flood     → max(CFLD, RFLD)        # Coastal + Riverine
+        flood     → max(CFLD, IFLD)        # Coastal + Inland
         winter    → max(WNTW, ISTM, CWAV)  # Winter Weather + Ice Storm + Cold Wave
         heat      → HWAV
-        seismic   → EQKE
+        seismic   → ERQK                   # Earthquake
         wildfire  → WFIR
 
     Source URL (download with `curl` to backend/data/nri_counties.csv):

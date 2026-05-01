@@ -389,15 +389,17 @@ Score normalization: FEMA publishes per-hazard scores on a 0–100 percentile sc
 
 Hazard mapping from FEMA's 18 NRI categories to our 7:
 
-| Our hazard | FEMA columns                  | Aggregation |
-| ---------- | ----------------------------- | ----------- |
-| hurricane  | HRCN_RISKS                    | passthrough |
-| tornado    | TRND_RISKS                    | passthrough |
-| flood      | CFLD_RISKS, RFLD_RISKS        | max         |
-| winter     | WNTW_RISKS, ISTM_RISKS, CWAV_RISKS | max    |
-| heat       | HWAV_RISKS                    | passthrough |
-| seismic    | EQKE_RISKS                    | passthrough |
-| wildfire   | WFIR_RISKS                    | passthrough |
+| Our hazard | FEMA columns                       | Aggregation |
+| ---------- | ---------------------------------- | ----------- |
+| hurricane  | HRCN_RISKS                         | passthrough |
+| tornado    | TRND_RISKS                         | passthrough |
+| flood      | CFLD_RISKS, IFLD_RISKS             | max         |
+| winter     | WNTW_RISKS, ISTM_RISKS, CWAV_RISKS | max         |
+| heat       | HWAV_RISKS                         | passthrough |
+| seismic    | ERQK_RISKS                         | passthrough |
+| wildfire   | WFIR_RISKS                         | passthrough |
+
+(Earlier versions of this loader used `RFLD_RISKS` and `EQKE_RISKS`, which don't exist in any FEMA NRI release — `IFLD_RISKS` is FEMA's actual code for inland flooding and `ERQK_RISKS` for earthquake. The wrong names silently parsed as zero, so flood was undercounted and seismic was always zero. `tests/test_routes.py::test_nri_loader_uses_correct_fema_column_names` pins the column names against regression.)
 
 `/api/weather` extracts `nws_zone_id` from the NWS points response (URL like `/zones/county/FLC057` → `FLC057`) and queries `nri_counties` by that key. On hit, the response includes `countyName` and `riskSource: "FEMA National Risk Index"`. On miss, falls back to the State row and labels `riskSource: "state-level baseline"` so the UI can show appropriate attribution.
 

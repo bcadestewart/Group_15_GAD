@@ -19,11 +19,18 @@ lookup path.
 Hazard mapping (FEMA's 18 NRI categories → our 7):
     hurricane → HRCN
     tornado   → TRND
-    flood     → max(CFLD, RFLD)        # Coastal + Riverine
+    flood     → max(CFLD, IFLD)        # Coastal Flooding + Inland Flooding
     winter    → max(WNTW, ISTM, CWAV)  # Winter Weather + Ice Storm + Cold Wave
     heat      → HWAV
-    seismic   → EQKE
+    seismic   → ERQK                   # Earthquake
     wildfire  → WFIR
+
+Note on column names: FEMA's actual CSV uses ERQK_RISKS (not EQKE) for
+earthquake and IFLD_RISKS (not RFLD) for the inland-flooding category.
+Earlier versions of this loader used RFLD/EQKE, which don't exist in
+the CSV — they silently parsed as zero, badly underestimating flood and
+zeroing out seismic for every county. Fixed in the same patch as this
+docstring update.
 
 The score is normalized from FEMA's 0–100 percentile scale to our 0–10
 internal scale by simple division. The composite `risk_score` stays on the
@@ -73,10 +80,11 @@ def parse_nri_row(row: dict) -> dict:
 
     hurricane = _normalize(_to_float(row.get("HRCN_RISKS")))
     tornado   = _normalize(_to_float(row.get("TRND_RISKS")))
-    # Flood = max of coastal + riverine
+    # Flood = max of coastal + inland (FEMA's NRI uses IFLD for "Inland
+    # Flooding" — formerly known as RFLD/Riverine in older datasets).
     flood = _normalize(max(
         _to_float(row.get("CFLD_RISKS")),
-        _to_float(row.get("RFLD_RISKS")),
+        _to_float(row.get("IFLD_RISKS")),
     ))
     # Winter = max of winter weather + ice storm + cold wave
     winter = _normalize(max(
@@ -85,7 +93,8 @@ def parse_nri_row(row: dict) -> dict:
         _to_float(row.get("CWAV_RISKS")),
     ))
     heat     = _normalize(_to_float(row.get("HWAV_RISKS")))
-    seismic  = _normalize(_to_float(row.get("EQKE_RISKS")))
+    # Seismic — FEMA NRI uses ERQK (earthquake) as the column code.
+    seismic  = _normalize(_to_float(row.get("ERQK_RISKS")))
     wildfire = _normalize(_to_float(row.get("WFIR_RISKS")))
 
     return {
