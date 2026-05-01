@@ -693,11 +693,12 @@ def test_nri_loader_seeded_some_counties():
         assert isinstance(v, float), f"{hazard} should be a float, got {type(v)}"
         assert 0.0 <= v <= 10.0, f"{hazard} out of [0,10]: {v}"
 
-    # Hillsborough is a Gulf-coast county; hurricane should be high in any
-    # reasonable risk dataset (sample = 8.45, real FEMA = ~9.9). Pin a
-    # generous lower bound so this passes against either.
-    assert hillsborough.hurricane > 5.0, (
-        f"Hillsborough hurricane should be high; got {hillsborough.hurricane}"
+    # Hillsborough is a Gulf-coast county; hurricane should land in
+    # 'Relatively High' or 'Very High' rating bands (7 or 9) in any
+    # reasonable risk dataset.
+    assert hillsborough.hurricane >= 7.0, (
+        f"Hillsborough hurricane should map to Rel High or higher; "
+        f"got {hillsborough.hurricane}"
     )
 
 
@@ -707,7 +708,11 @@ def test_nri_loader_uses_correct_fema_column_names():
     `RFLD_RISKS` and `EQKE_RISKS` (which don't exist in any FEMA CSV),
     so flood was underestimated (only coastal counted) and seismic was
     always zero. This test pins the parser against a synthetic row using
-    real FEMA column names."""
+    real FEMA column names — and confirms the wrong names are ignored
+    even when present.
+
+    Score values: with the rating-based mapping, 'Very High' → 9.
+    """
     from db.nri_loader import parse_nri_row
 
     row = {
@@ -720,35 +725,72 @@ def test_nri_loader_uses_correct_fema_column_names():
         "RISK_SCORE":  "99.9",
         "RISK_RATNG":  "Very High",
         # Real FEMA columns (the wrong ones the old loader used should
-        # have NO effect):
-        "HRCN_RISKS":  "100.0",
-        "TRND_RISKS":  "100.0",
-        "CFLD_RISKS":  "83.2",
-        "IFLD_RISKS":  "99.97",   # the column my old loader missed
-        "WNTW_RISKS":  "88.8",
-        "ISTM_RISKS":  "99.5",
-        "CWAV_RISKS":  "99.9",
-        "HWAV_RISKS":  "99.7",
-        "ERQK_RISKS":  "92.1",    # the column my old loader missed
-        "WFIR_RISKS":  "85.4",
+        # have NO effect). Use distinct ratings so the test detects if
+        # the parser incorrectly reads from the wrong column:
+        "HRCN_RISKS":  "100.0",  "HRCN_RATNG": "Very High",       "HRCN_AFREQ": "1.5",
+        "TRND_RISKS":  "100.0",  "TRND_RATNG": "Very High",       "TRND_AFREQ": "0.8",
+        "CFLD_RISKS":  "20.0",   "CFLD_RATNG": "Relatively Low",  "CFLD_AFREQ": "0.5",
+        "IFLD_RISKS":  "99.97",  "IFLD_RATNG": "Very High",       "IFLD_AFREQ": "1.2",
+        "WNTW_RISKS":  "88.8",   "WNTW_RATNG": "Very High",       "WNTW_AFREQ": "0.4",
+        "ISTM_RISKS":  "99.5",   "ISTM_RATNG": "Very High",       "ISTM_AFREQ": "0.3",
+        "CWAV_RISKS":  "99.9",   "CWAV_RATNG": "Very High",       "CWAV_AFREQ": "0.5",
+        "HWAV_RISKS":  "99.7",   "HWAV_RATNG": "Very High",       "HWAV_AFREQ": "1.0",
+        "ERQK_RISKS":  "92.1",   "ERQK_RATNG": "Relatively High", "ERQK_AFREQ": "0.001",
+        "WFIR_RISKS":  "85.4",   "WFIR_RATNG": "Very High",       "WFIR_AFREQ": "0.2",
         # Old wrong names — values here SHOULD be ignored by the parser.
-        "RFLD_RISKS":  "0.0",
-        "EQKE_RISKS":  "0.0",
+        "RFLD_RISKS":  "100.0",  "RFLD_RATNG": "Very High",
+        "EQKE_RISKS":  "100.0",  "EQKE_RATNG": "Very High",
     }
 
     kwargs = parse_nri_row(row)
 
-    # Flood should be max(CFLD=83.2, IFLD=99.97) / 10 ≈ 9.997
-    assert kwargs["flood"] > 9.9, (
-        f"flood should pick up IFLD_RISKS=99.97; got {kwargs['flood']}"
+    # Flood = max(CFLD=Relatively Low → 3, IFLD=Very High → 9) = 9.
+    # If the parser incorrectly read RFLD instead of IFLD, RFLD here is
+    # also Very High so the test would still pass — but CFLD is set to
+    # Relatively Low (3), so a parser that ignored both IFLD and RFLD
+    # would return 3, not 9. The 9 result confirms IFLD is being read.
+    assert kwargs["flood"] == 9.0, (
+        f"flood should be 9 (Very High via IFLD); got {kwargs['flood']}"
     )
-    # Seismic should be ERQK=92.1 / 10 = 9.21
-    assert kwargs["seismic"] > 9.0, (
-        f"seismic should pick up ERQK_RISKS=92.1; got {kwargs['seismic']}"
+    # Seismic: ERQK_RATNG = "Relatively High" → 7, BUT ERQK_AFREQ = 0.001
+    # (rare-event threshold) → capped at 1.0. This is the Houston-quake
+    # case: FEMA's percentile says high-ish, but the absolute frequency
+    # is so low that the score should reflect "essentially no risk."
+    assert kwargs["seismic"] == 1.0, (
+        f"seismic should be capped at 1 by AFREQ gate; got {kwargs['seismic']}"
     )
-    # And the unrelated hazards round through unchanged.
-    assert kwargs["hurricane"] == 10.0
-    assert kwargs["tornado"] == 10.0
+    # Hurricane and tornado map cleanly: Very High + non-rare AFREQ → 9.
+    assert kwargs["hurricane"] == 9.0
+    assert kwargs["tornado"] == 9.0
+
+
+def test_nri_loader_afreq_gate_caps_rare_events():
+    """The AFREQ sanity gate is the key fix for FEMA's percentile-bias
+    on rare-event hazards. A county with high percentile-rated risk but
+    near-zero annualized frequency (e.g. Houston earthquakes) should
+    score 1, not 7-9."""
+    from db.nri_loader import parse_nri_row
+
+    base = {
+        "STATEFIPS": "48", "STATEABBRV": "TX", "COUNTYFIPS": "201",
+        "STCOFIPS": "48201", "COUNTY": "Harris",
+    }
+
+    # AFREQ above threshold → trust the rating
+    row1 = {**base, "ERQK_RATNG": "Very High", "ERQK_AFREQ": "1.0"}
+    assert parse_nri_row(row1)["seismic"] == 9.0
+
+    # AFREQ below threshold → cap at 1
+    row2 = {**base, "ERQK_RATNG": "Very High", "ERQK_AFREQ": "0.001"}
+    assert parse_nri_row(row2)["seismic"] == 1.0
+
+    # Right at threshold (0.01) → just above means trust rating
+    row3 = {**base, "ERQK_RATNG": "Very High", "ERQK_AFREQ": "0.02"}
+    assert parse_nri_row(row3)["seismic"] == 9.0
+
+    # Empty / missing AFREQ → also caps (treats as zero)
+    row4 = {**base, "ERQK_RATNG": "Very High", "ERQK_AFREQ": ""}
+    assert parse_nri_row(row4)["seismic"] == 1.0
 
 
 def test_nri_loader_does_not_truncate_on_invalid_input(tmp_path):
