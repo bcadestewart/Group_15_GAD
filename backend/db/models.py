@@ -1,8 +1,7 @@
 """
-SQLAlchemy 2.0 declarative models for GAD's reference data.
+SQLAlchemy 2.0 declarative models for GAD's reference data + audit log.
 
-All static lookup tables that previously lived as Python dicts in app.py are
-now first-class entities here:
+Reference (read-only at runtime, populated once by db/seed.py):
 
     State                  → STATE_PROFILES + IECC_ZONES + BUILDING_CODES +
                              STATE_NAME_TO_CODE (consolidated)
@@ -11,14 +10,19 @@ now first-class entities here:
     RiskCategory           → RISK_CATEGORIES (label + weight + icon per hazard)
     ConstructionTip        → CONSTRUCTION_TIPS rows
 
-The data layer is intentionally read-only at runtime — the seed function in
-db/seed.py populates these tables on first startup and tests reset/reseed
-in-memory before each suite. Future work (Alembic migrations, a writable
-`analyses` audit-log table, user accounts) builds on this foundation.
+Transactional (writable):
+
+    Analysis               → one anonymous record per /api/weather call
+                             (timestamp, coordinates, resolved state,
+                             composite score, active alert count). No
+                             user-identifying information is stored.
+                             SRS §3.6 + §4.4 compliance.
 """
 from __future__ import annotations
 
-from sqlalchemy import ForeignKey, Integer, String
+from datetime import datetime, timezone
+
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, String
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -174,3 +178,60 @@ class ConstructionTip(Base):
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"<ConstructionTip {self.hazard_key} #{self.sort_order}>"
+
+
+# ─── Audit log (writable) ──────────────────────────────────────────────────
+
+
+def _utcnow() -> datetime:
+    """Naive UTC timestamp default. SQLite has no native tzinfo support so
+    we store wall-clock UTC and document it; production deployments on
+    Postgres can swap this for `func.now()` with a `TIMESTAMPTZ` column."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+class Analysis(Base):
+    """One anonymous record per `/api/weather` request. Captures the
+    metadata needed for usage analytics and operational visibility (which
+    states are most frequently analyzed, request rate over time, alert
+    incidence at the time of analysis) without persisting any
+    user-identifying information.
+
+    SRS traceability:
+      §3.6 Analytics & Audit Log — defines this entity and its read API.
+      §4.4 Security — only anonymous metadata; no IP, no session id, no
+      user id. The lat/lon are at the resolution the user clicked, which
+      is itself derived from a publicly-available map; no reverse-lookup
+      to identity is performed or stored.
+    """
+
+    __tablename__ = "analyses"
+
+    id:          Mapped[int]      = mapped_column(primary_key=True)
+    created_at:  Mapped[datetime] = mapped_column(
+        DateTime, default=_utcnow, index=True, nullable=False,
+    )
+    lat:         Mapped[float]    = mapped_column(Float, nullable=False)
+    lon:         Mapped[float]    = mapped_column(Float, nullable=False)
+    # `state` is nullable because NWS occasionally returns coordinates
+    # without a resolvable state (open ocean, very small coastal islands).
+    state:       Mapped[str | None] = mapped_column(String(2), index=True, nullable=True)
+    composite:   Mapped[int]      = mapped_column(Integer, nullable=False)
+    alert_count: Mapped[int]      = mapped_column(Integer, default=0, nullable=False)
+
+    def to_dict(self) -> dict:
+        return {
+            "id":         self.id,
+            "createdAt":  self.created_at.isoformat() + "Z",
+            "lat":        self.lat,
+            "lon":        self.lon,
+            "state":      self.state,
+            "composite":  self.composite,
+            "alertCount": self.alert_count,
+        }
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return (
+            f"<Analysis #{self.id} {self.state or '??'} "
+            f"({self.lat:.2f},{self.lon:.2f}) composite={self.composite}>"
+        )

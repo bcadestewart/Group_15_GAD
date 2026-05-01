@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from db import get_session, init_db  # noqa: E402
 from db.models import (  # noqa: E402
+    Analysis,
     DecadalTrend,
     HistoricalEvent,
     State,
@@ -145,6 +146,30 @@ def alert_info_url(event_name):
     return ALERT_INFO_FALLBACK
 
 
+def _record_analysis(lat, lon, state, composite, alert_count):
+    """Insert one Analysis row recording the metadata of a /api/weather
+    call. SRS §3.6 — anonymous metadata only, no PII per §4.4.
+
+    This is intentionally best-effort: any DB error is swallowed so a
+    failure to log can never break the user's analysis. Caller does not
+    need to wrap this in its own try/except.
+    """
+    try:
+        with get_session() as db:
+            db.add(Analysis(
+                lat=lat,
+                lon=lon,
+                state=state or None,  # nullable — NWS sometimes can't resolve
+                composite=int(composite),
+                alert_count=int(alert_count),
+            ))
+            db.commit()
+    except Exception:
+        # Don't surface logging failures to the user. In a future PR with
+        # structured logging set up, emit a warning here.
+        pass
+
+
 # ═══════════════ ROUTES ═════════════════════════════════════════════════════
 
 @app.route('/')
@@ -250,6 +275,11 @@ def weather():
         scores = {k: jitter(profile.get(k, DEFAULT_PROFILE.get(k, 0)), lat, lon)
                   for k in RISK_CATEGORIES}
         composite = composite_from_scores(scores)
+
+        # ── Audit log (SRS §3.6) — best-effort write so a transient DB
+        # error never breaks the user-facing analysis. No PII is stored;
+        # see the Analysis model docstring for the §4.4 rationale.
+        _record_analysis(lat, lon, state, composite, len(alerts))
 
         return jsonify({
             'forecast':    forecasts,
@@ -426,6 +456,109 @@ def export():
     fname = f"GAD_Report_{datetime.utcnow().strftime('%Y%m%d')}.pdf"
     return send_file(buf, mimetype='application/pdf',
                      as_attachment=True, download_name=fname)
+
+
+@app.route('/api/analyses/recent')
+def analyses_recent():
+    """Paginated list of recent /api/weather analyses (SRS §3.6).
+
+    Query params:
+        limit  — page size, default 20, capped at 100
+        offset — number of rows to skip, default 0
+
+    Response:
+        {
+            "items": [{...analysis...}, ...],
+            "total": <int>,
+            "limit": <int>,
+            "offset": <int>
+        }
+    """
+    from sqlalchemy import func
+    try:
+        limit = max(1, min(100, int(request.args.get('limit', 20))))
+    except (TypeError, ValueError):
+        limit = 20
+    try:
+        offset = max(0, int(request.args.get('offset', 0)))
+    except (TypeError, ValueError):
+        offset = 0
+
+    with get_session() as db:
+        total = db.scalar(select(func.count()).select_from(Analysis)) or 0
+        rows = db.scalars(
+            select(Analysis)
+            .order_by(Analysis.created_at.desc())
+            .limit(limit)
+            .offset(offset)
+        ).all()
+        items = [r.to_dict() for r in rows]
+
+    return jsonify({
+        'items': items,
+        'total': total,
+        'limit': limit,
+        'offset': offset,
+    })
+
+
+@app.route('/api/analyses/stats')
+def analyses_stats():
+    """Aggregate statistics over the analyses table (SRS §3.6).
+
+    Response:
+        {
+            "total":   <int>,                          # all-time count
+            "last24h": <int>,                          # rolling 24h
+            "byState": {"FL": 12, "TX": 8, ...},       # all-time per state
+            "byDay":   {"2026-04-30": 5, ...}          # last 14 days
+        }
+    """
+    from datetime import timedelta
+
+    from sqlalchemy import func
+
+    with get_session() as db:
+        total = db.scalar(select(func.count()).select_from(Analysis)) or 0
+
+        cutoff_24h = _utcnow_naive() - timedelta(hours=24)
+        last_24h = db.scalar(
+            select(func.count()).select_from(Analysis)
+            .where(Analysis.created_at >= cutoff_24h)
+        ) or 0
+
+        by_state_rows = db.execute(
+            select(Analysis.state, func.count(Analysis.id))
+            .where(Analysis.state.is_not(None))
+            .group_by(Analysis.state)
+        ).all()
+        by_state = {state: count for state, count in by_state_rows}
+
+        cutoff_14d = _utcnow_naive() - timedelta(days=14)
+        # SQLite-compatible day grouping: format as YYYY-MM-DD via strftime.
+        day_expr = func.strftime('%Y-%m-%d', Analysis.created_at)
+        by_day_rows = db.execute(
+            select(day_expr, func.count(Analysis.id))
+            .where(Analysis.created_at >= cutoff_14d)
+            .group_by(day_expr)
+            .order_by(day_expr)
+        ).all()
+        by_day = {day: count for day, count in by_day_rows}
+
+    return jsonify({
+        'total':   total,
+        'last24h': last_24h,
+        'byState': by_state,
+        'byDay':   by_day,
+    })
+
+
+def _utcnow_naive():
+    """Naive UTC `datetime.now()` matching the storage convention used by
+    the Analysis model (SQLite has no native tzinfo support; we store
+    wall-clock UTC). Local helper to keep the analyses_stats query free
+    of inline imports."""
+    return datetime.utcnow()
 
 
 @app.route('/api/health')

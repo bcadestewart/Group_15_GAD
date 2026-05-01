@@ -4,8 +4,8 @@
 | ---------------- | -------------------------------------------------- |
 | Project          | Geospatial Architecture Database (GAD)             |
 | Course           | CS 4398 — Software Engineering, Group 15           |
-| Document version | 1.7                                                |
-| Last updated     | 2026-04-30                                         |
+| Document version | 1.8                                                |
+| Last updated     | 2026-05-01                                         |
 | Status           | Living document — update with relevant code changes |
 | Companion docs   | [README.md](./README.md), [Group15SRS.html](./Group15SRS.html) |
 
@@ -221,6 +221,28 @@ Body: the assembled site object from the client. Generates a multi-page styled P
 
 Liveness probe. Returns `{ status: "ok", time: <iso8601> }`.
 
+### 7.6 `GET /api/analyses/recent`
+
+Paginated list of recent `/api/weather` analyses (SRS §3.6 read API).
+
+- **Query params:** `limit` (default 20, capped at 100), `offset` (default 0). Invalid values fall back to defaults rather than 4xx.
+- **Returns:** `{ items: [{id, createdAt, lat, lon, state, composite, alertCount}, ...], total, limit, offset }`. Items are ordered by `created_at` descending.
+
+### 7.7 `GET /api/analyses/stats`
+
+Aggregate statistics over the audit log (SRS §3.6 read API).
+
+- **Returns:**
+  ```json
+  {
+    "total":   123,
+    "last24h": 17,
+    "byState": { "FL": 41, "TX": 29, "CA": 18, ... },
+    "byDay":   { "2026-04-30": 12, "2026-05-01": 5, ... }
+  }
+  ```
+  `byDay` covers the trailing 14 days. Day buckets use `strftime('%Y-%m-%d', created_at)` against UTC timestamps. `byState` excludes the small fraction of analyses where NWS could not resolve a state.
+
 ---
 
 ## 8. Data model
@@ -273,7 +295,18 @@ erDiagram
         string tip
         int sort_order
     }
+    analyses {
+        int id PK
+        datetime created_at "indexed; UTC"
+        float lat
+        float lon
+        string state "indexed; nullable"
+        int composite "0-100"
+        int alert_count
+    }
 ```
+
+The reference tables (states, historical_events, decadal_trends, risk_categories, construction_tips) are populated once by `db.seed.seed_database()` and never written to at runtime. The **`analyses` table** (SRS §3.6) is the only writable entity — every successful `/api/weather` call appends one row capturing anonymous request metadata. There is intentionally no foreign key from `analyses.state` to `states.code`: state lookups occasionally return null (NWS coverage gaps), and we want to record those analyses without falling back to a sentinel.
 
 The state table consolidates four prior dicts (`STATE_PROFILES` + `IECC_ZONES` + `BUILDING_CODES` + `STATE_NAME_TO_CODE`) into a single row per state; `normalize_state` uses an `OR` query against `code` and `full_name` to accept either form. `RiskCategory` and `ConstructionTip` keep their `sort_order` columns so the original ordering of the Python lists (which the PDF export and frontend rely on) survives the round-trip through the database.
 
@@ -304,6 +337,24 @@ Most-common IECC zone per state, expressed as either a single zone (`"3"`) or a 
 ### 8.4 Building codes (`BUILDING_CODES`)
 
 The currently adopted IBC year per state, with state-specific override labels for jurisdictions that adopt a derived code (`FBC 2023`, `CBC 2022`).
+
+### 8.6 Audit log (`Analysis`)
+
+Every successful `/api/weather` request appends one row. Schema (see §8 ER diagram for the full picture):
+
+| Column        | Type      | Notes                                                                                  |
+| ------------- | --------- | -------------------------------------------------------------------------------------- |
+| `id`          | int PK    | autoincrement                                                                          |
+| `created_at`  | datetime  | indexed; naive UTC (SQLite has no native tzinfo)                                       |
+| `lat`         | float     | the user's clicked latitude, before any rounding                                       |
+| `lon`         | float     | the user's clicked longitude                                                           |
+| `state`       | str(2)    | indexed; **nullable** (NWS sometimes can't resolve a state for ocean coords)           |
+| `composite`   | int       | 0–100; the composite risk score returned to the user                                   |
+| `alert_count` | int       | active NWS alerts at the time of analysis                                              |
+
+**Privacy posture (SRS §4.4 alignment):** No identity is stored — no IP address, no session id, no user id, no User-Agent. Coordinates are at the resolution the user clicked on a public map and are not reverse-looked-up to any address before storage. The intent of this table is operational visibility (which states are most analyzed, request rate over time, alert incidence), not user tracking. A future user-accounts feature would add a `user_id` column behind a feature flag, with retention controls documented separately.
+
+**Best-effort write:** `app._record_analysis()` wraps the insert in a `try/except` that swallows everything. A DB outage during the write must never propagate to the user-facing analysis response. Tests verify this by patching `Session.commit` to raise and asserting `/api/weather` still returns 200.
 
 ### 8.5 Historical events (`HISTORICAL_EVENTS`)
 
@@ -435,6 +486,9 @@ The `pause and retry` flow described in SRS §3.5.2 is implemented via the toast
 | §3.4 Risk + recommendations           | Compute score, list recs                     | `composite_from_scores`, `RISK_CATEGORIES`, `CONSTRUCTION_TIPS`.                      |
 | §3.5.1 UC1: failure to find address   | Error message + retry                        | `/api/search` 503 + frontend toast; user remains on input.                            |
 | §3.5.2 UC2: no internet               | Notify and pause                             | `online`/`offline` browser events drive `#offlineBanner`.                             |
+| §3.6 Analytics & Audit Log            | Anonymous metadata per analysis              | `Analysis` model (§8.6); `app._record_analysis()` writes after every `/api/weather`. |
+| §3.6.1 UC1: record analysis metadata  | Append row, never block user response        | Best-effort write — `try/except` swallows DB errors. Test guards the silence.         |
+| §3.6.2 UC2: read recent analyses      | Paginated list + aggregate stats             | `GET /api/analyses/recent` (§7.6), `GET /api/analyses/stats` (§7.7).                   |
 | §4.1 Reliability ≤ 5 s                | Performance budget                           | 8 s upstream timeout caps worst-case; lazy-import keeps cold-start under 1 s.         |
 | §4.2 Robustness                       | All errors surfaced                          | Centralized `try/except` in routes; toast UI in client.                               |
 | §4.3 Maintainability                  | Periodic upkeep                              | Pinned deps, README + DESIGN living docs, GitHub PR workflow, pytest suite + ruff lint gated by GitHub Actions CI. |
@@ -489,6 +543,7 @@ Branch protection on `main` should require both matrix legs (Python 3.10 and 3.1
 ## 15. Future work / known limitations
 
 - **Caching.** No server-side cache; every site click triggers fresh NWS calls. Add a TTL cache before scaling beyond a single user.
+- **Admin UI on top of `/api/analyses`.** The audit-log read endpoints (§7.6, §7.7) ship without a frontend. A small admin dashboard page that polls `/stats` and renders a recent-activity table on top of `/recent` would be the next increment, ideally behind authentication.
 - **Authoritative data tables.** `State` rows are still hand-curated; the seed source could be replaced with a build-time pipeline pulling from FEMA NRI and ICC code-adoption feeds.
 - **Internationalization.** US-only by design (NWS coverage). Adding non-US support means swapping NWS for a global provider (e.g. Open-Meteo) and rebuilding the IBC table.
 - **Persisted comparisons.** Comparisons live only in `localStorage`; no account / sync.
@@ -510,3 +565,4 @@ Branch protection on `main` should require both matrix legs (Python 3.10 and 3.1
 | 2026-04-28 | Brandon Stewart | v1.5 — Sidebar and map are now resizable via draggable splitters. CSS Grid layout driven by `--gad-sidebar-w` / `--gad-map-h` custom properties, sizes persisted to `localStorage` (`gad.layout`), keyboard-accessible (arrow keys), clamped to sensible bounds, hidden on narrow viewports. Map height changes trigger `map.invalidateSize()` so Leaflet redraws cleanly. Strengthens SRS §4.5 Usability traceability. Frontend-only change — backend untouched, suite still at 52 tests. |
 | 2026-04-28 | Brandon Stewart | v1.6 — All static reference data migrated from in-app Python dicts to a SQLite database accessed via the SQLAlchemy 2.0 ORM. New `backend/db/` package: `models.py` (State, HistoricalEvent, DecadalTrend, RiskCategory, ConstructionTip), `seed_data.py` (canonical Python source), `seed.py` (idempotent loader), `__init__.py` (engine + `init_db()`). `app.py` imports `init_db()` at module load and queries the DB in `/api/weather`, `/api/history`, and `normalize_state`. `RISK_CATEGORIES` / `CONSTRUCTION_TIPS` re-exported from `seed_data` so the PDF path and tests still use them as dicts. New §5.3 documents the data layer; §8 rewritten as a SQLAlchemy schema with an entity-relationship diagram; §10.1 lists SQLAlchemy 2.0.36; §14 documents the new `GAD_DATABASE_URL` env var; §15 names Alembic as the next increment. Suite still at 52 tests, passing on both the in-memory test DB and the auto-seeded file DB. |
 | 2026-04-30 | Brandon Stewart | v1.7 — Schema migrations now managed by Alembic. New `alembic.ini` + `alembic/` (env.py, script.py.mako, versions/) at the repo root. Initial migration `0001_initial_schema` generated via autogenerate covers all 5 tables, both FKs (with `ondelete=CASCADE`), all 3 indexes (`ix_states_full_name` unique, `ix_construction_tips_hazard_key`, `ix_historical_events_state_code`). `init_db()` swapped from `Base.metadata.create_all()` to `alembic.command.upgrade(cfg, "head")`, passing the application's existing engine connection via `Config.attributes['connection']` so in-memory SQLite tests continue to work. `env.py` prefers that connection over building its own engine — solves the classic Alembic + `:memory:` trap. Suite still at 52 tests; CI verifies `alembic upgrade head` on a clean file DB recovers the same schema. New §5.3 entries for `alembic.ini` / `alembic/env.py` / `alembic/versions/`; §10.1 adds alembic 1.13.3; §14 documents the schema-change workflow; §15 drops Alembic from future work. |
+| 2026-05-01 | Brandon Stewart | v1.8 — Analytics & audit log (SRS §3.6). New `Analysis` model + `analyses` table (id, created_at indexed, lat, lon, state indexed nullable, composite, alert_count). Migration `0002_add_analyses_table` generated via autogenerate. `app._record_analysis()` writes one row after every `/api/weather` response with explicit best-effort try/except — tests verify a `Session.commit` failure produces no user-facing 5xx. Two new read endpoints: `GET /api/analyses/recent` (paginated, limit≤100) and `GET /api/analyses/stats` (totals + 24h count + by_state + by_day for the last 14 days). Suite expanded from 52 → 60 tests. New §7.6/§7.7 endpoint specs, §8 ER diagram includes `analyses`, new §8.6 documents the privacy posture and best-effort-write contract, §13 traceability rows for §3.6/§3.6.1/§3.6.2, §15 future work names an admin UI on top of these endpoints. SRS amendment in this same PR adds the §3.6 section and a TOC entry; SRS revision-history block notes the addition. |
