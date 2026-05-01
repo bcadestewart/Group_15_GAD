@@ -4,7 +4,7 @@
 | ---------------- | -------------------------------------------------- |
 | Project          | Geospatial Architecture Database (GAD)             |
 | Course           | CS 4398 — Software Engineering, Group 15           |
-| Document version | 1.8                                                |
+| Document version | 1.9                                                |
 | Last updated     | 2026-05-01                                         |
 | Status           | Living document — update with relevant code changes |
 | Companion docs   | [README.md](./README.md), [Group15SRS.html](./Group15SRS.html) |
@@ -105,14 +105,22 @@ External libraries (loaded via CDN, not bundled): Leaflet 1.9.4, Chart.js 4.4.1,
 
 ### 5.2 Backend
 
-`backend/app.py` is the Flask entry point: routes, the alert-info-URL helper, and the risk-scoring math. All static reference data lives in the `backend/db/` package (see §5.3) and is queried via the SQLAlchemy ORM. Logical sections inside `app.py`:
+`backend/app.py` is the Flask entry point: routes, the alert-info-URL helper, and the risk-scoring math. Static reference data lives in `backend/db/` (see §5.3); upstream resilience helpers live in two small modules at the same level:
+
+| Module                       | Responsibility                                                                                                                       |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `backend/app.py`             | Flask routes, utility functions, audit-log writer, cache wrapper around `/api/weather`. `init_db()` runs at module load.             |
+| `backend/http_session.py`    | Module-level `requests.Session` with a `urllib3` `Retry(total=2, backoff_factor=0.5, status_forcelist=(502,503,504))` adapter mounted on `https://` and `http://`. Pre-set User-Agent. Exported as `http`. Used everywhere the app calls NWS or Nominatim. |
+| `backend/cache.py`           | Thread-safe `TTLCache(ttl_seconds, max_size)` with `OrderedDict` + `threading.Lock`, LRU eviction when over capacity, hit/miss counters, `.stats()` snapshot for `/api/cache/stats`. |
+
+Logical sections inside `app.py`:
 
 | Section            | Responsibility                                                                                |
 | ------------------ | --------------------------------------------------------------------------------------------- |
-| Imports + init     | Wires up the DB layer; `init_db()` runs at module load (idempotent: create_all + seed).       |
+| Imports + init     | Wires up the DB layer + retry session + weather TTL cache; `init_db()` runs at module load.   |
 | Re-exports         | `RISK_CATEGORIES`, `CONSTRUCTION_TIPS`, `DEFAULT_PROFILE`, `DEFAULT_TRENDS` re-imported from `db.seed_data` so the PDF export path and the test suite can keep using them as Python dicts. They are the same constants the seed loader writes to the DB. |
-| Utilities          | `normalize_state` (DB query), `jitter` (deterministic noise), `composite_from_scores` (uses `RISK_CATEGORIES` weights), `alert_info_url` (NWS-event → safety-URL mapping; see §9.1). |
-| Routes             | `/`, `/api/search`, `/api/weather`, `/api/history`, `/api/export`, `/api/health`.             |
+| Utilities          | `normalize_state` (DB query), `jitter` (deterministic noise), `composite_from_scores` (uses `RISK_CATEGORIES` weights), `alert_info_url` (NWS-event → safety-URL mapping; see §9.1), `_record_analysis` (best-effort audit-log writer; see §8.6), `_weather_cache_key` (rounds lat/lon to 3 decimals). |
+| Routes             | `/`, `/api/search`, `/api/weather`, `/api/history`, `/api/export`, `/api/health`, `/api/analyses/recent`, `/api/analyses/stats`, `/api/cache/stats`. |
 
 `reportlab` is **lazy-imported** inside the export handler so the rest of the app can boot even when reportlab is not installed.
 
@@ -227,6 +235,23 @@ Paginated list of recent `/api/weather` analyses (SRS §3.6 read API).
 
 - **Query params:** `limit` (default 20, capped at 100), `offset` (default 0). Invalid values fall back to defaults rather than 4xx.
 - **Returns:** `{ items: [{id, createdAt, lat, lon, state, composite, alertCount}, ...], total, limit, offset }`. Items are ordered by `created_at` descending.
+
+### 7.8 `GET /api/cache/stats`
+
+Operational view of the in-memory `/api/weather` TTL cache (SRS §4.1 reliability).
+
+- **Returns:**
+  ```json
+  {
+    "hits":        42,
+    "misses":      8,
+    "size":        7,
+    "max_size":    1000,
+    "ttl_seconds": 300,
+    "hit_rate":    0.84
+  }
+  ```
+  `hit_rate` is `hits / (hits + misses)` — `0.0` when the cache has never been queried. Backed by `cache.TTLCache.stats()`.
 
 ### 7.7 `GET /api/analyses/stats`
 
@@ -464,7 +489,7 @@ The `pause and retry` flow described in SRS §3.5.2 is implemented via the toast
 
 | SRS section          | Requirement                              | Implementation evidence                                                                  |
 | -------------------- | ---------------------------------------- | ---------------------------------------------------------------------------------------- |
-| §4.1 Reliability     | ≤ 5 s for location lookup + data pull    | All upstream calls have 8 s timeout; typical end-to-end is 1.5–3 s. WSGI worker model keeps the path short. |
+| §4.1 Reliability     | ≤ 5 s for location lookup + data pull    | All upstream calls have 8 s per-request timeout. `http_session.py` mounts a `urllib3` `Retry` adapter (total=2, backoff=0.5, retry on 502/503/504) so transient NWS slowness silently retries instead of surfacing as 503. Repeat clicks on the same area within 5 minutes are sub-50 ms via the in-memory `TTLCache` in `cache.py` (see §7.8). |
 | §4.2 Robustness      | Display all encountered errors           | See §11; all routes return JSON errors, frontend surfaces them via toast.                |
 | §4.3 Maintainability | Periodic upkeep, contributor access      | Public GitHub repo, pinned deps, single-file backend, this design doc + SRS in tree, automated test suite (`tests/`, 36 tests) gated by GitHub Actions CI on every PR. |
 | §4.4 Security        | No PII; HTTPS                            | No user accounts, no logging of coordinates server-side. Static tables only. HTTPS at deploy. |
@@ -489,7 +514,7 @@ The `pause and retry` flow described in SRS §3.5.2 is implemented via the toast
 | §3.6 Analytics & Audit Log            | Anonymous metadata per analysis              | `Analysis` model (§8.6); `app._record_analysis()` writes after every `/api/weather`. |
 | §3.6.1 UC1: record analysis metadata  | Append row, never block user response        | Best-effort write — `try/except` swallows DB errors. Test guards the silence.         |
 | §3.6.2 UC2: read recent analyses      | Paginated list + aggregate stats             | `GET /api/analyses/recent` (§7.6), `GET /api/analyses/stats` (§7.7).                   |
-| §4.1 Reliability ≤ 5 s                | Performance budget                           | 8 s upstream timeout caps worst-case; lazy-import keeps cold-start under 1 s.         |
+| §4.1 Reliability ≤ 5 s                | Performance budget                           | 8 s upstream timeout caps the per-call worst case; `urllib3` Retry adapter (total=2, backoff=0.5) absorbs transient 5xx blips; 5-minute TTL cache on `/api/weather` makes repeats sub-50 ms. Operational visibility via `/api/cache/stats`. |
 | §4.2 Robustness                       | All errors surfaced                          | Centralized `try/except` in routes; toast UI in client.                               |
 | §4.3 Maintainability                  | Periodic upkeep                              | Pinned deps, README + DESIGN living docs, GitHub PR workflow, pytest suite + ruff lint gated by GitHub Actions CI. |
 | §4.4 Security                         | No PII; HTTPS                                | Stateless backend, no logging of inputs, deploy behind TLS.                           |
@@ -542,7 +567,8 @@ Branch protection on `main` should require both matrix legs (Python 3.10 and 3.1
 
 ## 15. Future work / known limitations
 
-- **Caching.** No server-side cache; every site click triggers fresh NWS calls. Add a TTL cache before scaling beyond a single user.
+- **Distributed cache.** The current `TTLCache` is in-process — fine for a single Flask worker, but a Gunicorn `-w 4` deployment would have four independent caches. A Redis-backed `TTLCache` swap (or even a shared file-based cache) would unify hit rates across workers and survive restarts.
+- **Parallel upstream calls.** `/api/weather` calls NWS three times sequentially (point → forecast → alerts). The forecast URL depends on the points response, but the alerts call only needs the resolved state — it could run concurrently with the forecast call to cut worst-case latency another ~30%. Worth doing once we add either `requests-futures` or migrate to `httpx` async.
 - **Admin UI on top of `/api/analyses`.** The audit-log read endpoints (§7.6, §7.7) ship without a frontend. A small admin dashboard page that polls `/stats` and renders a recent-activity table on top of `/recent` would be the next increment, ideally behind authentication.
 - **Authoritative data tables.** `State` rows are still hand-curated; the seed source could be replaced with a build-time pipeline pulling from FEMA NRI and ICC code-adoption feeds.
 - **Internationalization.** US-only by design (NWS coverage). Adding non-US support means swapping NWS for a global provider (e.g. Open-Meteo) and rebuilding the IBC table.
@@ -566,3 +592,4 @@ Branch protection on `main` should require both matrix legs (Python 3.10 and 3.1
 | 2026-04-28 | Brandon Stewart | v1.6 — All static reference data migrated from in-app Python dicts to a SQLite database accessed via the SQLAlchemy 2.0 ORM. New `backend/db/` package: `models.py` (State, HistoricalEvent, DecadalTrend, RiskCategory, ConstructionTip), `seed_data.py` (canonical Python source), `seed.py` (idempotent loader), `__init__.py` (engine + `init_db()`). `app.py` imports `init_db()` at module load and queries the DB in `/api/weather`, `/api/history`, and `normalize_state`. `RISK_CATEGORIES` / `CONSTRUCTION_TIPS` re-exported from `seed_data` so the PDF path and tests still use them as dicts. New §5.3 documents the data layer; §8 rewritten as a SQLAlchemy schema with an entity-relationship diagram; §10.1 lists SQLAlchemy 2.0.36; §14 documents the new `GAD_DATABASE_URL` env var; §15 names Alembic as the next increment. Suite still at 52 tests, passing on both the in-memory test DB and the auto-seeded file DB. |
 | 2026-04-30 | Brandon Stewart | v1.7 — Schema migrations now managed by Alembic. New `alembic.ini` + `alembic/` (env.py, script.py.mako, versions/) at the repo root. Initial migration `0001_initial_schema` generated via autogenerate covers all 5 tables, both FKs (with `ondelete=CASCADE`), all 3 indexes (`ix_states_full_name` unique, `ix_construction_tips_hazard_key`, `ix_historical_events_state_code`). `init_db()` swapped from `Base.metadata.create_all()` to `alembic.command.upgrade(cfg, "head")`, passing the application's existing engine connection via `Config.attributes['connection']` so in-memory SQLite tests continue to work. `env.py` prefers that connection over building its own engine — solves the classic Alembic + `:memory:` trap. Suite still at 52 tests; CI verifies `alembic upgrade head` on a clean file DB recovers the same schema. New §5.3 entries for `alembic.ini` / `alembic/env.py` / `alembic/versions/`; §10.1 adds alembic 1.13.3; §14 documents the schema-change workflow; §15 drops Alembic from future work. |
 | 2026-05-01 | Brandon Stewart | v1.8 — Analytics & audit log (SRS §3.6). New `Analysis` model + `analyses` table (id, created_at indexed, lat, lon, state indexed nullable, composite, alert_count). Migration `0002_add_analyses_table` generated via autogenerate. `app._record_analysis()` writes one row after every `/api/weather` response with explicit best-effort try/except — tests verify a `Session.commit` failure produces no user-facing 5xx. Two new read endpoints: `GET /api/analyses/recent` (paginated, limit≤100) and `GET /api/analyses/stats` (totals + 24h count + by_state + by_day for the last 14 days). Suite expanded from 52 → 60 tests. New §7.6/§7.7 endpoint specs, §8 ER diagram includes `analyses`, new §8.6 documents the privacy posture and best-effort-write contract, §13 traceability rows for §3.6/§3.6.1/§3.6.2, §15 future work names an admin UI on top of these endpoints. SRS amendment in this same PR adds the §3.6 section and a TOC entry; SRS revision-history block notes the addition. |
+| 2026-05-01 | Brandon Stewart | v1.9 — Weather-pipeline resilience (response to a real upstream-timeout incident reported on 2026-05-01 from Kansas-area clicks). New `backend/http_session.py` mounts a `urllib3` `Retry` adapter (total=2, backoff_factor=0.5, status_forcelist=(502,503,504)) on a shared `requests.Session`; all outbound calls in `app.py` migrated from `requests.get(...)` to `http.get(...)`. New `backend/cache.py` provides a thread-safe `TTLCache` (OrderedDict + Lock, LRU eviction, hit/miss counters); `/api/weather` now caches responses for 5 minutes keyed by `(round(lat,3), round(lon,3))` (~110m cell). Cache hits still write an Analysis row so the audit log remains accurate. New `GET /api/cache/stats` endpoint surfaces the cache hit-rate. Suite expanded 60 → 66 tests (cache miss-then-hit, nearby-coords-share-cell, TTL expiry via `time.monotonic` patch, `/api/cache/stats` shape + counters, retry adapter policy assertion). New conftest autouse fixture clears the cache between tests so ordering is irrelevant. New §5.2 module table includes `http_session.py` and `cache.py`; new §7.8 documents `/api/cache/stats`; §12 + §13 NFR/traceability rows for §4.1 cite both retries and caching; §15 drops the standalone "caching" item and adds two new items (distributed cache, parallel upstream calls). |

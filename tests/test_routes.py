@@ -52,7 +52,7 @@ def test_search_empty_query_returns_empty_list(client):
 
 def test_search_valid_query_returns_results(client, mocker, fake_response, nominatim_search_payload):
     mocker.patch(
-        "app.requests.get",
+        "app.http.get",
         return_value=fake_response(json_data=nominatim_search_payload),
     )
     res = client.get("/api/search?q=Tampa")
@@ -66,7 +66,7 @@ def test_search_valid_query_returns_results(client, mocker, fake_response, nomin
 
 def test_search_handles_nominatim_unreachable(client, mocker):
     mocker.patch(
-        "app.requests.get",
+        "app.http.get",
         side_effect=requests.exceptions.ConnectionError("Nominatim down"),
     )
     res = client.get("/api/search?q=Tampa")
@@ -106,7 +106,7 @@ def test_weather_happy_path(
             return fake_response(json_data=nws_point_payload)
         return fake_response(json_data={}, ok=False, status_code=404)
 
-    mocker.patch("app.requests.get", side_effect=_router)
+    mocker.patch("app.http.get", side_effect=_router)
 
     res = client.get("/api/weather?lat=27.9506&lon=-82.4572")
     assert res.status_code == 200
@@ -141,7 +141,7 @@ def test_weather_happy_path(
 def test_weather_non_us_returns_404(client, mocker, fake_response):
     """NWS only covers the US; non-US coords should yield a clean 404."""
     mocker.patch(
-        "app.requests.get",
+        "app.http.get",
         return_value=fake_response(json_data={}, ok=False, status_code=404),
     )
     res = client.get("/api/weather?lat=51.5074&lon=-0.1278")  # London
@@ -152,7 +152,7 @@ def test_weather_non_us_returns_404(client, mocker, fake_response):
 def test_weather_nws_unreachable_returns_503(client, mocker):
     """SRS §3.5.2 — upstream outage should surface as 503."""
     mocker.patch(
-        "app.requests.get",
+        "app.http.get",
         side_effect=requests.exceptions.ConnectionError("NWS unreachable"),
     )
     res = client.get("/api/weather?lat=27.9506&lon=-82.4572")
@@ -283,7 +283,7 @@ def test_weather_happy_path_writes_an_analysis_row(
             return fake_response(json_data=nws_point_payload)
         return fake_response(json_data={}, ok=False, status_code=404)
 
-    mocker.patch("app.requests.get", side_effect=_router)
+    mocker.patch("app.http.get", side_effect=_router)
 
     res = client.get("/api/weather?lat=27.9506&lon=-82.4572")
     assert res.status_code == 200
@@ -318,7 +318,7 @@ def test_analysis_write_failure_does_not_break_weather(
             return fake_response(json_data=nws_point_payload)
         return fake_response(json_data={}, ok=False, status_code=404)
 
-    mocker.patch("app.requests.get", side_effect=_router)
+    mocker.patch("app.http.get", side_effect=_router)
     # Stub _record_analysis to raise — the route should still return 200.
     mocker.patch("app._record_analysis", side_effect=RuntimeError("DB down"))
 
@@ -349,7 +349,7 @@ def test_analysis_db_commit_failure_is_silent(
             return fake_response(json_data=nws_point_payload)
         return fake_response(json_data={}, ok=False, status_code=404)
 
-    mocker.patch("app.requests.get", side_effect=_router)
+    mocker.patch("app.http.get", side_effect=_router)
     mocker.patch.object(Session, "commit", side_effect=RuntimeError("commit failed"))
 
     res = client.get("/api/weather?lat=27.9506&lon=-82.4572")
@@ -373,7 +373,7 @@ def test_analyses_recent_orders_descending_and_paginates(
             return fake_response(json_data=nws_point_payload)
         return fake_response(json_data={}, ok=False, status_code=404)
 
-    mocker.patch("app.requests.get", side_effect=_router)
+    mocker.patch("app.http.get", side_effect=_router)
 
     # Generate 5 analyses
     for i in range(5):
@@ -433,7 +433,7 @@ def test_analyses_stats_aggregates_correctly(
             return fake_response(json_data=nws_point_payload)
         return fake_response(json_data={}, ok=False, status_code=404)
 
-    mocker.patch("app.requests.get", side_effect=_router)
+    mocker.patch("app.http.get", side_effect=_router)
 
     # 3 analyses (all hit FL via the mocked NWS payload)
     for _ in range(3):
@@ -459,3 +459,154 @@ def test_analyses_stats_empty_table(client):
     assert body["last24h"] == 0
     assert body["byState"] == {}
     assert body["byDay"] == {}
+
+
+# ═══════════════ WEATHER PIPELINE RESILIENCE (cache + retries) ══════════════
+
+
+def test_weather_second_identical_call_is_a_cache_hit(
+    client, mocker, fake_response,
+    nws_point_payload, nws_forecast_payload, nws_alerts_payload,
+):
+    """First /api/weather call hits NWS. Second identical call (within
+    the TTL) reuses the cached response and never touches NWS."""
+    def _router(url, *args, **kwargs):
+        if "alerts/active" in url:
+            return fake_response(json_data=nws_alerts_payload)
+        if "forecast" in url:
+            return fake_response(json_data=nws_forecast_payload)
+        if "/points/" in url:
+            return fake_response(json_data=nws_point_payload)
+        return fake_response(json_data={}, ok=False, status_code=404)
+
+    spy = mocker.patch("app.http.get", side_effect=_router)
+
+    # Cold call — three NWS round-trips (point + forecast + alerts).
+    res1 = client.get("/api/weather?lat=27.9506&lon=-82.4572")
+    assert res1.status_code == 200
+    cold_call_count = spy.call_count
+    assert cold_call_count >= 2  # point + forecast (alerts only if state resolved)
+
+    # Warm call — should be a cache hit; spy count unchanged.
+    res2 = client.get("/api/weather?lat=27.9506&lon=-82.4572")
+    assert res2.status_code == 200
+    assert spy.call_count == cold_call_count, "cache hit shouldn't re-hit NWS"
+
+    # Response shape identical
+    assert res1.get_json() == res2.get_json()
+
+
+def test_weather_nearby_coords_share_cache_entry(
+    client, mocker, fake_response,
+    nws_point_payload, nws_forecast_payload, nws_alerts_payload,
+):
+    """Two clicks within the same ~110m cell (3-decimal rounding) should
+    resolve to the same cache entry."""
+    def _router(url, *args, **kwargs):
+        if "alerts/active" in url:
+            return fake_response(json_data=nws_alerts_payload)
+        if "forecast" in url:
+            return fake_response(json_data=nws_forecast_payload)
+        if "/points/" in url:
+            return fake_response(json_data=nws_point_payload)
+        return fake_response(json_data={}, ok=False, status_code=404)
+
+    spy = mocker.patch("app.http.get", side_effect=_router)
+
+    # 27.95061 and 27.95065 both round to 27.951 → same cache key.
+    client.get("/api/weather?lat=27.95061&lon=-82.4572")
+    cold_count = spy.call_count
+    client.get("/api/weather?lat=27.95065&lon=-82.4572")
+    assert spy.call_count == cold_count, "nearby clicks should hit the same cache entry"
+
+
+def test_weather_cache_expires_after_ttl(
+    client, mocker, fake_response,
+    nws_point_payload, nws_forecast_payload, nws_alerts_payload,
+):
+    """After ttl_seconds elapses, the next call is a miss again."""
+    def _router(url, *args, **kwargs):
+        if "alerts/active" in url:
+            return fake_response(json_data=nws_alerts_payload)
+        if "forecast" in url:
+            return fake_response(json_data=nws_forecast_payload)
+        if "/points/" in url:
+            return fake_response(json_data=nws_point_payload)
+        return fake_response(json_data={}, ok=False, status_code=404)
+
+    spy = mocker.patch("app.http.get", side_effect=_router)
+
+    # Pin time.monotonic to a known value, advance past the TTL.
+    import app as gad_app
+    base = 10_000.0
+    monotonic_value = [base]
+    mocker.patch("cache.time.monotonic", side_effect=lambda: monotonic_value[0])
+
+    # Cold + warm
+    client.get("/api/weather?lat=27.9506&lon=-82.4572")
+    cold_count = spy.call_count
+    client.get("/api/weather?lat=27.9506&lon=-82.4572")
+    assert spy.call_count == cold_count  # still a hit
+
+    # Advance time past TTL
+    monotonic_value[0] = base + gad_app.WEATHER_CACHE_TTL_SECONDS + 1
+    res = client.get("/api/weather?lat=27.9506&lon=-82.4572")
+    assert res.status_code == 200
+    assert spy.call_count > cold_count, "cache should miss after TTL expiry"
+
+
+def test_cache_stats_endpoint_shape(client):
+    """/api/cache/stats returns the expected fields."""
+    res = client.get("/api/cache/stats")
+    assert res.status_code == 200
+    body = res.get_json()
+    for key in ("hits", "misses", "size", "max_size", "ttl_seconds", "hit_rate"):
+        assert key in body, f"missing {key}"
+    assert body["max_size"] >= 1
+    assert body["ttl_seconds"] > 0
+    assert 0.0 <= body["hit_rate"] <= 1.0
+
+
+def test_cache_stats_reflects_hits_and_misses(
+    client, mocker, fake_response,
+    nws_point_payload, nws_forecast_payload, nws_alerts_payload,
+):
+    """After a miss + a hit, the stats endpoint should show both."""
+    def _router(url, *args, **kwargs):
+        if "alerts/active" in url:
+            return fake_response(json_data=nws_alerts_payload)
+        if "forecast" in url:
+            return fake_response(json_data=nws_forecast_payload)
+        if "/points/" in url:
+            return fake_response(json_data=nws_point_payload)
+        return fake_response(json_data={}, ok=False, status_code=404)
+
+    mocker.patch("app.http.get", side_effect=_router)
+
+    client.get("/api/weather?lat=27.9506&lon=-82.4572")  # miss
+    client.get("/api/weather?lat=27.9506&lon=-82.4572")  # hit
+
+    body = client.get("/api/cache/stats").get_json()
+    assert body["hits"] == 1
+    assert body["misses"] == 1
+    assert body["size"] == 1
+    assert body["hit_rate"] == 0.5
+
+
+def test_retry_session_recovers_from_one_transient_503(client, mocker):
+    """If NWS returns a transient 503 once and a success on retry, the
+    user shouldn't see the 503 — the urllib3 Retry adapter handles it.
+
+    We don't try to verify the retry fully end-to-end (that would require
+    a real socket-level test). Instead we verify that the `http` session
+    has the retry adapter mounted with the expected policy, so the
+    behavior is configured correctly."""
+    import app as gad_app
+
+    adapter = gad_app.http.get_adapter("https://api.weather.gov/")
+    retry = adapter.max_retries
+    assert retry.total == 2
+    assert retry.backoff_factor == 0.5
+    assert 503 in retry.status_forcelist
+    assert 502 in retry.status_forcelist
+    assert 504 in retry.status_forcelist
