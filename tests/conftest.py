@@ -29,6 +29,16 @@ os.environ.setdefault("GAD_DATABASE_URL", "sqlite:///:memory:")
 import app as gad_app  # noqa: E402 — sys.path setup must precede import
 
 
+@pytest.fixture(autouse=True)
+def _isolate_weather_cache():
+    """Clear the in-process /api/weather TTL cache between tests so a
+    cached entry from one test never silently turns into a "skip the
+    mock" cache hit in the next."""
+    gad_app.weather_cache.clear()
+    yield
+    gad_app.weather_cache.clear()
+
+
 @pytest.fixture
 def app():
     """Flask app in testing mode."""

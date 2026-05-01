@@ -21,16 +21,28 @@ import requests
 from flask import Flask, jsonify, request, send_file
 from sqlalchemy import or_, select
 
-# Make `db` importable when running `python3 backend/app.py` from any
-# working directory (the repo root, or backend/).
+# Make `db` (and the new top-level helper modules) importable when running
+# `python3 backend/app.py` from any working directory.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from cache import TTLCache  # noqa: E402
 from db import get_session, init_db  # noqa: E402
 from db.models import (  # noqa: E402
     Analysis,
     DecadalTrend,
     HistoricalEvent,
     State,
+)
+from http_session import http  # noqa: E402
+
+# 5-minute TTL cache for /api/weather. Key is the rounded (lat, lon) at
+# 3-decimal precision (~110m cell — nearby clicks share an entry without
+# crossing state lines). Tests reset this between cases.
+WEATHER_CACHE_TTL_SECONDS = 5 * 60
+WEATHER_CACHE_MAX_ENTRIES = 1000
+weather_cache = TTLCache(
+    ttl_seconds=WEATHER_CACHE_TTL_SECONDS,
+    max_size=WEATHER_CACHE_MAX_ENTRIES,
 )
 
 # Re-exported here so tests and the PDF export path can keep accessing
@@ -54,7 +66,10 @@ init_db()
 
 
 
-HEADERS = {"User-Agent": "GAD/1.0 (cs4398@group15.com)"}
+# Per-call request timeout. Retries are configured globally in
+# http_session.py — total=2, backoff=0.5, so a worst-case retry chain
+# adds ~1.5s on top of this timeout before surfacing 503 to the user.
+REQUEST_TIMEOUT_SECONDS = 8
 
 
 # ═══════════════ UTILITIES ════════════════════════════════════════════════════
@@ -183,14 +198,24 @@ def search():
     if len(q) < 3:
         return jsonify([])
     try:
-        url = f"https://nominatim.openstreetmap.org/search?format=json&q={requests.utils.quote(q)}&limit=5&countrycodes=us"
-        resp = requests.get(url, headers=HEADERS, timeout=8).json()
+        url = (
+            f"https://nominatim.openstreetmap.org/search?format=json"
+            f"&q={requests.utils.quote(q)}&limit=5&countrycodes=us"
+        )
+        resp = http.get(url, timeout=REQUEST_TIMEOUT_SECONDS).json()
         return jsonify([
             {'lat': float(x['lat']), 'lon': float(x['lon']), 'display': x['display_name']}
             for x in resp
         ])
     except requests.exceptions.RequestException as e:
         return jsonify({'error': f'Geocoding service unavailable: {e}'}), 503
+
+
+def _weather_cache_key(lat, lon):
+    """Round to 3 decimals (~110m cell) so nearby clicks share an entry.
+    State boundaries are wider than 110m everywhere except a handful of
+    municipal corners, so cross-state cache pollution is not a concern."""
+    return (round(lat, 3), round(lon, 3))
 
 
 @app.route('/api/weather')
@@ -200,10 +225,26 @@ def weather():
     if lat is None or lon is None:
         return jsonify({'error': 'Missing coordinates'}), 400
 
+    # ── Cache lookup. On hit we still record an Analysis row — the
+    # user's click happened, the audit log should reflect that. The
+    # upstream call is what gets skipped.
+    cache_key = _weather_cache_key(lat, lon)
+    cached = weather_cache.get(cache_key)
+    if cached is not None:
+        _record_analysis(
+            lat, lon,
+            cached.get('state'),
+            cached.get('composite', 0),
+            len(cached.get('alerts', [])),
+        )
+        return jsonify(cached)
+
     try:
         # NWS Point API
-        point_res = requests.get(f"https://api.weather.gov/points/{lat},{lon}",
-                                 headers=HEADERS, timeout=8)
+        point_res = http.get(
+            f"https://api.weather.gov/points/{lat},{lon}",
+            timeout=REQUEST_TIMEOUT_SECONDS,
+        )
         if not point_res.ok:
             return jsonify({'error': 'Location not supported by NWS — only US locations are supported.'}), 404
 
@@ -214,9 +255,9 @@ def weather():
         # Fallback state via reverse geocoding (returns full state name)
         if not state:
             try:
-                rev = requests.get(
+                rev = http.get(
                     f"https://nominatim.openstreetmap.org/reverse?format=json&lat={lat}&lon={lon}",
-                    headers=HEADERS, timeout=6
+                    timeout=6,
                 ).json()
                 state = rev.get('address', {}).get('state', '')
             except requests.exceptions.RequestException:
@@ -226,7 +267,7 @@ def weather():
         # Forecast
         forecasts, obs = [], {}
         if forecast_url:
-            f_res = requests.get(forecast_url, headers=HEADERS, timeout=8)
+            f_res = http.get(forecast_url, timeout=REQUEST_TIMEOUT_SECONDS)
             if f_res.ok:
                 periods = f_res.json().get('properties', {}).get('periods', [])
                 forecasts = [{
@@ -246,8 +287,10 @@ def weather():
         # Active alerts
         alerts = []
         if state:
-            a_res = requests.get(f"https://api.weather.gov/alerts/active?area={state}",
-                                 headers=HEADERS, timeout=8)
+            a_res = http.get(
+                f"https://api.weather.gov/alerts/active?area={state}",
+                timeout=REQUEST_TIMEOUT_SECONDS,
+            )
             if a_res.ok:
                 for f in a_res.json().get('features', []):
                     ap = f.get('properties', {})
@@ -276,12 +319,7 @@ def weather():
                   for k in RISK_CATEGORIES}
         composite = composite_from_scores(scores)
 
-        # ── Audit log (SRS §3.6) — best-effort write so a transient DB
-        # error never breaks the user-facing analysis. No PII is stored;
-        # see the Analysis model docstring for the §4.4 rationale.
-        _record_analysis(lat, lon, state, composite, len(alerts))
-
-        return jsonify({
+        response_payload = {
             'forecast':    forecasts,
             'alerts':      alerts,
             'scores':      scores,
@@ -290,7 +328,18 @@ def weather():
             'state':       state,
             'climateZone': climate_zone,
             'buildingCode': building_code_label,
-        })
+        }
+
+        # Cache the response for the next ~5 minutes so repeat clicks
+        # in the same area skip the upstream round-trip entirely.
+        weather_cache.set(cache_key, response_payload)
+
+        # ── Audit log (SRS §3.6) — best-effort write so a transient DB
+        # error never breaks the user-facing analysis. No PII is stored;
+        # see the Analysis model docstring for the §4.4 rationale.
+        _record_analysis(lat, lon, state, composite, len(alerts))
+
+        return jsonify(response_payload)
 
     except requests.exceptions.RequestException as e:
         return jsonify({'error': f'Weather service unavailable: {e}'}), 503
@@ -559,6 +608,18 @@ def _utcnow_naive():
     wall-clock UTC). Local helper to keep the analyses_stats query free
     of inline imports."""
     return datetime.utcnow()
+
+
+@app.route('/api/cache/stats')
+def cache_stats():
+    """Operational visibility into the /api/weather TTL cache.
+
+    Returns hit/miss counters, current size, max size, TTL, and computed
+    hit rate. Useful both for tests (to assert the cache is being used
+    as designed) and for ops (to confirm the cache is doing its job
+    against real upstream slowness).
+    """
+    return jsonify(weather_cache.stats())
 
 
 @app.route('/api/health')
