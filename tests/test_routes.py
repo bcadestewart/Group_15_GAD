@@ -694,6 +694,59 @@ def test_nri_loader_parses_sample_csv():
     assert abs(miami.hurricane - 9.38) < 1e-6
 
 
+def test_nri_loader_does_not_truncate_on_invalid_input(tmp_path):
+    """Regression: a non-CSV (e.g. HTML redirect page accidentally curled
+    to nri_counties.csv) must not silently destroy existing seed data.
+
+    Reproduces the failure mode observed when a user runs `curl` against
+    a FEMA URL that redirects, without `-L`: a tiny non-CSV gets saved,
+    the loader truncates the table, finds zero parsable rows, and the
+    seed data is gone. Loader must leave existing data alone in that case.
+    """
+    from db import get_session
+    from db.models import NRICounty
+    from db.nri_loader import load_nri_counties, maybe_load_nri
+    from sqlalchemy import func, select
+
+    # Sanity: the seed populated some sample rows.
+    with get_session() as db:
+        seeded_count = db.scalar(select(func.count()).select_from(NRICounty))
+    assert seeded_count > 0, "test setup failed — sample seed didn't populate"
+
+    # Drop a 134-byte HTML stub at the path (mimicking what `curl` would
+    # save if FEMA returned a redirect page that wasn't followed).
+    bad_csv = tmp_path / "fake_nri.csv"
+    bad_csv.write_text(
+        "<html><body><h1>Moved</h1><p>The data has moved.</p></body></html>\n"
+    )
+
+    with get_session() as db:
+        inserted = load_nri_counties(db, bad_csv)
+    assert inserted == 0, "loader should report zero rows on invalid input"
+
+    # Critical assertion: existing rows still there.
+    with get_session() as db:
+        post_count = db.scalar(select(func.count()).select_from(NRICounty))
+    assert post_count == seeded_count, (
+        f"loader must not truncate when input is invalid; lost "
+        f"{seeded_count - post_count} rows"
+    )
+
+    # And maybe_load_nri should also fall through to the sample when the
+    # 'production' file is bogus.
+    bad_full = tmp_path / "nri_counties.csv"
+    bad_full.write_text("<html><body>nope</body></html>")
+    sample_link = tmp_path / "nri_sample.csv"
+    # Copy the real sample so maybe_load_nri sees a usable fallback.
+    from pathlib import Path as _P
+    repo_sample = _P(__file__).resolve().parent.parent / "backend" / "data" / "nri_sample.csv"
+    sample_link.write_text(repo_sample.read_text())
+
+    with get_session() as db:
+        n = maybe_load_nri(db, tmp_path)
+    assert n > 0, "maybe_load_nri should fall through to the sample when the full file is bad"
+
+
 def test_retry_session_recovers_from_one_transient_503(client, mocker):
     """If NWS returns a transient 503 once and a success on retry, the
     user shouldn't see the 503 — the urllib3 Retry adapter handles it.

@@ -109,9 +109,15 @@ def parse_nri_row(row: dict) -> dict:
 def load_nri_counties(session: Session, csv_path: Path | str) -> int:
     """Idempotently load NRI county data from a CSV file.
 
-    Truncate-and-reinsert: simpler than upsert, fast enough for ~3,200
-    rows, and gives us a clean slate every time the source CSV is
-    refreshed. Returns the number of rows inserted.
+    Two-pass: parse the entire CSV into memory first, then only
+    truncate-and-insert if we successfully extracted at least one valid
+    row. This avoids destroying existing seed data when a user accidentally
+    saves a non-CSV (e.g. an HTML redirect page) at the configured path —
+    a real failure mode observed when curling the FEMA URL through a
+    redirect without `-L`.
+
+    Returns the number of rows inserted. Returns 0 (and leaves existing
+    data untouched) when the file parses to zero valid rows.
 
     Raises FileNotFoundError if the path doesn't exist — callers that
     want graceful degradation should check for the file first.
@@ -120,40 +126,55 @@ def load_nri_counties(session: Session, csv_path: Path | str) -> int:
     if not path.exists():
         raise FileNotFoundError(f"NRI CSV not found at {path}")
 
-    # Wipe the table first
-    session.execute(delete(NRICounty))
-
-    inserted = 0
+    # First pass: parse without touching the database. Anything malformed
+    # gets dropped silently; we only commit if we found real rows.
+    parsed_rows: list[dict] = []
     with path.open(newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
             try:
                 kwargs = parse_nri_row(row)
             except (KeyError, ValueError):
-                # Skip malformed rows rather than aborting the whole load
                 continue
             if not kwargs.get("county_fips") or not kwargs.get("state_code"):
                 continue
-            session.merge(NRICounty(**kwargs))
-            inserted += 1
+            parsed_rows.append(kwargs)
 
+    if not parsed_rows:
+        # The file existed but produced zero valid rows — almost certainly
+        # not a real NRI CSV. Don't touch the table; whatever was there
+        # (likely the sample seed) stays.
+        return 0
+
+    # Second pass: now we know the file is valid, do the destructive part.
+    session.execute(delete(NRICounty))
+    for kwargs in parsed_rows:
+        session.merge(NRICounty(**kwargs))
     session.commit()
-    return inserted
+    return len(parsed_rows)
 
 
 def maybe_load_nri(session: Session, data_dir: Path | str) -> int:
     """Try the production CSV first, fall back to the sample bundled in
-    the repo. Returns rows inserted (0 if neither file exists). This is
-    the entry point called from db.seed.seed_database() so a fresh
-    checkout boots end-to-end whether or not the user has downloaded the
-    full FEMA dataset yet.
+    the repo. Returns rows inserted (0 if neither file exists or both
+    parse to zero valid rows). This is the entry point called from
+    db.seed.seed_database() so a fresh checkout boots end-to-end whether
+    or not the user has downloaded the full FEMA dataset yet.
+
+    If the production CSV exists but is invalid (zero valid rows — e.g.
+    an accidental HTML download from a missed redirect), the loader
+    leaves the table alone, then this function tries the sample as a
+    fallback.
     """
     data_dir = Path(data_dir)
     full_path   = data_dir / "nri_counties.csv"
     sample_path = data_dir / "nri_sample.csv"
 
     if full_path.exists():
-        return load_nri_counties(session, full_path)
+        n = load_nri_counties(session, full_path)
+        if n > 0:
+            return n
+        # Production file existed but parsed to nothing — fall through to sample.
     if sample_path.exists():
         return load_nri_counties(session, sample_path)
     return 0
