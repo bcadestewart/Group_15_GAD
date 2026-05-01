@@ -156,25 +156,35 @@ def load_nri_counties(session: Session, csv_path: Path | str) -> int:
 
 def maybe_load_nri(session: Session, data_dir: Path | str) -> int:
     """Try the production CSV first, fall back to the sample bundled in
-    the repo. Returns rows inserted (0 if neither file exists or both
-    parse to zero valid rows). This is the entry point called from
+    the repo. Returns rows inserted (0 if no candidate file produces any
+    valid rows). This is the entry point called from
     db.seed.seed_database() so a fresh checkout boots end-to-end whether
     or not the user has downloaded the full FEMA dataset yet.
 
-    If the production CSV exists but is invalid (zero valid rows — e.g.
-    an accidental HTML download from a missed redirect), the loader
-    leaves the table alone, then this function tries the sample as a
-    fallback.
+    Production-CSV candidates tried in order:
+        nri_counties.csv        — our convention (curl -o nri_counties.csv ...)
+        NRI_Table_Counties.csv  — FEMA's native filename (saved as-is from a
+                                  browser download from hazards.fema.gov)
+
+    Whichever exists is parsed; if it produces ≥1 valid row, that data
+    wins. If it parses to zero rows (e.g. an HTML stub from a missed
+    redirect), the function falls through to the next candidate, and
+    finally to the committed sample.
     """
     data_dir = Path(data_dir)
-    full_path   = data_dir / "nri_counties.csv"
+    candidates = (
+        data_dir / "nri_counties.csv",
+        data_dir / "NRI_Table_Counties.csv",
+    )
     sample_path = data_dir / "nri_sample.csv"
 
-    if full_path.exists():
-        n = load_nri_counties(session, full_path)
-        if n > 0:
-            return n
-        # Production file existed but parsed to nothing — fall through to sample.
+    for path in candidates:
+        if path.exists():
+            n = load_nri_counties(session, path)
+            if n > 0:
+                return n
+            # Existed but invalid — fall through to next candidate.
+
     if sample_path.exists():
         return load_nri_counties(session, sample_path)
     return 0

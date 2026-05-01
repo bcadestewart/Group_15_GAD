@@ -126,15 +126,21 @@ alembic upgrade head --sql    # print SQL without running (review-only)
 
 `/api/weather` prefers **county-level** hazard scores from the FEMA [National Risk Index](https://hazards.fema.gov/nri/) over the hand-curated state-level fallback. The county lookup uses the `county` zone id that NWS already returns in its points response (e.g. `FLC057` for Hillsborough, FL), so no extra geocoding round-trip is needed.
 
-A small sample CSV (~15 representative counties) ships with the repo at `backend/data/nri_sample.csv` so a fresh checkout boots end-to-end. To get full national coverage (~3,200 counties), download FEMA's published CSV once locally:
+A small sample CSV (~15 representative counties) ships with the repo at `backend/data/nri_sample.csv` so a fresh checkout boots end-to-end. To get full national coverage (~3,200 counties), download FEMA's published CSV once locally — either approach works:
 
 ```bash
-curl -o backend/data/nri_counties.csv \
+# Option 1: curl (renames to our convention)
+curl -L -o backend/data/nri_counties.csv \
     https://hazards.fema.gov/nri/data/NRI_Table_Counties.csv
-python3 backend/app.py    # next boot loads the full CSV (idempotent)
+
+# Option 2: browser download (keeps FEMA's native filename)
+# Visit https://hazards.fema.gov/nri/data-resources, click the County CSV
+# link, save the resulting NRI_Table_Counties.csv to backend/data/.
 ```
 
-The loader prefers `nri_counties.csv` when present and silently falls back to `nri_sample.csv` when it isn't — so checking in your local download is optional. `nri_counties.csv` is gitignored. When NRI data is missing for the user-clicked county (or no data is loaded at all), `/api/weather` falls back to state-level scores and labels the response with `riskSource: "state-level baseline"` so the UI can show attribution.
+Then restart the server (`rm backend/gad.db && python3 backend/app.py`) so the seeder reloads.
+
+The loader recognizes both `nri_counties.csv` and `NRI_Table_Counties.csv` and silently falls back to `nri_sample.csv` when neither is present. Both production filenames are gitignored. If a download is corrupt (e.g. an HTML stub from a missed redirect), the loader detects zero valid rows and falls through to the next candidate rather than wiping the table. When NRI data is missing for the user-clicked county, `/api/weather` falls back to state-level scores and labels the response with `riskSource: "state-level baseline"` so the UI can show attribution.
 
 ---
 
