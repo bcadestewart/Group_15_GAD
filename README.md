@@ -33,7 +33,7 @@ A comparison panel lets the user save up to 3 sites side-by-side, and recent sea
 
 The setup is the same on every platform — clone the repo, create a virtual environment, install dependencies, run the app — but the **commands** differ between macOS/Linux and Windows. Pick the block for your OS and run the lines one at a time. After `activate`, your shell prompt should start with `(.venv)` — that's the signal you're working inside the project's isolated environment.
 
-#### macOS / Linux
+#### Commands to Install and Run
 
 ```bash
 git clone https://github.com/bcadestewart/Group_15_GAD.git
@@ -44,19 +44,6 @@ source .venv/bin/activate
 
 pip install -r backend/requirements.txt
 python3 backend/app.py
-```
-
-#### Windows (PowerShell or `cmd`)
-
-```cmd
-git clone https://github.com/bcadestewart/Group_15_GAD.git
-cd Group_15_GAD
-
-py -m venv .venv
-.venv\Scripts\activate
-
-py -m pip install -r backend\requirements.txt
-py backend\app.py
 ```
 
 > **Windows note:** use the `py` launcher (ships with the official Python installer) and `python -m pip` (or `py -m pip`) rather than bare `python` / `pip`. This avoids the very common "pip and python point to different installs" trap on Windows. If `py` isn't recognized, re-run the Python installer, click **Modify**, and tick **py launcher** + **Add Python to environment variables**.
