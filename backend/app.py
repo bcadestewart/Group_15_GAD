@@ -10,6 +10,7 @@ canonical Python representation is in `db/seed_data.py`; the schema is in
 seeds the DB on first import (idempotent), so a fresh checkout boots
 end-to-end without any extra setup steps.
 """
+import csv as _csv
 import io
 import math
 import os
@@ -404,8 +405,32 @@ def history():
 
 @app.route('/api/export', methods=['POST'])
 def export():
-    """Generate a styled PDF report from a payload of analysis data."""
-    data = request.get_json(force=True)
+    """Generate a styled site report (SRS §3.3).
+
+    The export format is selected by the ``format`` query parameter or a
+    ``"format"`` key in the JSON body — accepted values are ``pdf`` and
+    ``csv``. The default is ``pdf`` so existing callers (and the older
+    PDF tests) continue to work without modification. Unknown formats
+    return a 400 with an explanatory error payload.
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    fmt = (request.args.get('format') or data.get('format') or 'pdf').lower()
+    if fmt == 'csv':
+        return _export_csv(data)
+    if fmt == 'pdf':
+        return _export_pdf(data)
+    return jsonify({
+        'error': f"Unsupported export format '{fmt}'. Use 'pdf' or 'csv'.",
+    }), 400
+
+
+def _export_pdf(data):
+    """Render the assembled site object as a multi-page styled PDF.
+
+    Lazy-imports reportlab so the rest of the app can boot when the
+    optional PDF dependency is missing — that's the documented behavior
+    in DESIGN.md §7.4 and is exercised by `test_export.py`.
+    """
     try:
         from reportlab.lib import colors
         from reportlab.lib.pagesizes import LETTER
@@ -466,11 +491,21 @@ def export():
     ]))
     story.append(t)
 
-    # Risk table
+    # Risk table — round float scores (NRI data is float-valued) to 1
+    # decimal so the PDF doesn't blow out cells with 15-decimal floats.
+    def _fmt_score(s):
+        if s is None:
+            return '—'
+        try:
+            r = round(float(s), 1)
+        except (TypeError, ValueError):
+            return str(s)
+        return str(int(r)) if r == int(r) else f"{r:.1f}"
+
     story.append(Paragraph('Hazard Assessment', h2_style))
     rows = [['Category', 'Score (0-10)', 'Weight']]
     for k, v in RISK_CATEGORIES.items():
-        rows.append([v['label'], str(data.get('scores', {}).get(k, '—')),
+        rows.append([v['label'], _fmt_score(data.get('scores', {}).get(k)),
                      f"{int(v['weight']*100)}%"])
     t = Table(rows, colWidths=[3 * inch, 1.5 * inch, 1.5 * inch])
     t.setStyle(TableStyle([
@@ -495,7 +530,7 @@ def export():
         for k in active:
             story.append(Paragraph(
                 f"<b>{RISK_CATEGORIES[k]['label']}</b> "
-                f"<font color='#64748b'>(Risk: {scores[k]}/10)</font>", h2_style))
+                f"<font color='#64748b'>(Risk: {_fmt_score(scores[k])}/10)</font>", h2_style))
             for tip in CONSTRUCTION_TIPS.get(k, []):
                 story.append(Paragraph(f"• {tip}", body_style))
 
@@ -533,6 +568,127 @@ def export():
     fname = f"GAD_Report_{datetime.utcnow().strftime('%Y%m%d')}.pdf"
     return send_file(buf, mimetype='application/pdf',
                      as_attachment=True, download_name=fname)
+
+
+def _export_csv(data):
+    """Render the assembled site object as a CSV report (SRS §3.3).
+
+    Mirrors the section ordering of the PDF (site summary → hazard
+    assessment → forecast → alerts → historical events → construction
+    recommendations) so the two artifacts are consistent. CSV quoting
+    is delegated to the stdlib `csv.writer` so embedded commas and
+    quotes in display names, alert headlines, and historical-event
+    notes are escaped correctly without hand-rolled quoting logic.
+    """
+    text_buf = io.StringIO()
+    writer = _csv.writer(text_buf)
+
+    # Header — site summary
+    writer.writerow(['Geospatial Architecture Database — Site Report'])
+    writer.writerow(['Location',          data.get('display', '')])
+    writer.writerow(['Coordinates',       f"{data.get('lat', '')}, {data.get('lon', '')}"])
+    writer.writerow(['State',             data.get('state', '')])
+    writer.writerow(['IECC Climate Zone', data.get('climateZone', '')])
+    writer.writerow(['Building Code',     data.get('buildingCode', '')])
+    writer.writerow(['Generated',         datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')])
+    writer.writerow([])
+
+    # Composite + hazard assessment
+    writer.writerow(['=== COMPOSITE RISK ==='])
+    composite = data.get('composite')
+    writer.writerow(['Composite Score', f"{composite if composite is not None else '—'}/100"])
+    writer.writerow([])
+    writer.writerow(['=== HAZARD ASSESSMENT ==='])
+    writer.writerow(['Category', 'Score (0-10)', 'Weight'])
+    scores = data.get('scores') or {}
+    for k, meta in RISK_CATEGORIES.items():
+        writer.writerow([
+            meta['label'],
+            scores.get(k, ''),
+            f"{int(meta['weight'] * 100)}%",
+        ])
+    writer.writerow([])
+
+    # Forecast
+    writer.writerow(['=== 7-DAY FORECAST ==='])
+    writer.writerow(['Period', 'Temperature', 'Conditions'])
+    for period in (data.get('forecast') or []):
+        temp = period.get('temperature', '')
+        unit = period.get('temperatureUnit', '')
+        temp_str = f"{temp}°{unit}" if temp != '' else ''
+        writer.writerow([
+            period.get('name', ''),
+            temp_str,
+            period.get('shortForecast', ''),
+        ])
+    writer.writerow([])
+
+    # Active alerts
+    writer.writerow(['=== ACTIVE ALERTS ==='])
+    writer.writerow(['Event', 'Severity', 'Headline'])
+    alerts = data.get('alerts') or []
+    if not alerts:
+        writer.writerow(['None', '', ''])
+    else:
+        for alert in alerts:
+            writer.writerow([
+                alert.get('event', ''),
+                alert.get('severity', ''),
+                alert.get('headline', ''),
+            ])
+    writer.writerow([])
+
+    # Historical events (optional — only if the client included them)
+    history = data.get('history') or {}
+    events = history.get('events') or []
+    if events:
+        writer.writerow(['=== HISTORICAL EVENTS ==='])
+        writer.writerow(['Year', 'Event', 'Severity', 'Note'])
+        for ev in events:
+            writer.writerow([
+                ev.get('year', ''),
+                ev.get('event', ''),
+                ev.get('severity', ''),
+                ev.get('note', ''),
+            ])
+        writer.writerow([])
+
+    # Construction recommendations — same threshold as the PDF
+    writer.writerow(['=== CONSTRUCTION RECOMMENDATIONS ==='])
+
+    def _score_or_zero(key):
+        try:
+            return float(scores.get(key) or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    active = [k for k in RISK_CATEGORIES if _score_or_zero(k) >= 3]
+    active.sort(key=lambda k: -_score_or_zero(k))
+    if not active:
+        writer.writerow([
+            'All risk categories below threshold. Standard construction practices apply.',
+        ])
+    else:
+        for k in active:
+            writer.writerow([f"--- {RISK_CATEGORIES[k]['label']} ---"])
+            for tip in CONSTRUCTION_TIPS.get(k, []):
+                writer.writerow([tip])
+
+    # Disclaimer mirrors the PDF footer
+    writer.writerow([])
+    writer.writerow([
+        'Disclaimer: This report is advisory. Always consult local building codes, '
+        'a licensed structural engineer, and relevant FEMA / ICC standards before construction.',
+    ])
+
+    out = io.BytesIO(text_buf.getvalue().encode('utf-8'))
+    fname = f"GAD_Report_{datetime.utcnow().strftime('%Y%m%d')}.csv"
+    return send_file(
+        out,
+        mimetype='text/csv',
+        as_attachment=True,
+        download_name=fname,
+    )
 
 
 @app.route('/api/analyses/recent')

@@ -597,7 +597,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 ${riskLevel(d.scores[k]).icon} ${riskLevel(d.scores[k]).label}
               </span>
             </p>
-            <p class="overview-num">${d.scores[k]}/10</p>
+            <p class="overview-num">${fmtScore(d.scores[k])}/10</p>
           </div>`).join('')}
       </div>
     `;
@@ -734,13 +734,13 @@ document.addEventListener('DOMContentLoaded', () => {
                   <span aria-hidden="true">${RISK_ICONS[k]}</span>
                   <span>${RISK_LABELS[k]}</span>
                 </div>
-                <div class="risk-bar" role="progressbar" aria-valuenow="${d.scores[k]}"
+                <div class="risk-bar" role="progressbar" aria-valuenow="${fmtScore(d.scores[k])}"
                      aria-valuemin="0" aria-valuemax="10"
-                     aria-label="${RISK_LABELS[k]} risk: ${d.scores[k]} of 10, ${lvl.label}">
-                  <div class="risk-bar-fill" style="width:${d.scores[k] * 10}%; background:${lvl.color}"></div>
+                     aria-label="${RISK_LABELS[k]} risk: ${fmtScore(d.scores[k])} of 10, ${lvl.label}">
+                  <div class="risk-bar-fill" style="width:${Math.min(100, d.scores[k] * 10)}%; background:${lvl.color}"></div>
                 </div>
                 <span class="risk-pill" style="background:${lvl.color}20;color:${lvl.color}">
-                  ${lvl.icon} ${d.scores[k]}/10
+                  ${lvl.icon} ${fmtScore(d.scores[k])}/10
                 </span>
               </div>`;
           }).join('')}
@@ -814,7 +814,7 @@ document.addEventListener('DOMContentLoaded', () => {
               <span aria-hidden="true">${RISK_ICONS[k]}</span>
               <strong>${RISK_LABELS[k]}</strong>
               <span class="risk-pill" style="background:${lvl.color}20;color:${lvl.color};margin-left:auto">
-                ${lvl.icon} Risk ${v}/10
+                ${lvl.icon} Risk ${fmtScore(v)}/10
               </span>
             </div>
             <ul class="tips-list">
@@ -851,77 +851,37 @@ document.addEventListener('DOMContentLoaded', () => {
   exportConfirmBtn.addEventListener('click', async () => {
     const fmt = document.querySelector('input[name="exportFormat"]:checked').value;
     closeModal(exportModal);
-    if (fmt === 'csv') downloadCSV();
-    else await downloadPDF();
+    await downloadReport(fmt);
   });
 
-  function downloadCSV() {
-    const d = currentData;
-    const rows = [
-      ['Geospatial Architecture Database — Site Report'],
-      ['Location', `"${d.display}"`],
-      ['Coordinates', `${d.lat}, ${d.lon}`],
-      ['State', d.state || ''],
-      ['IECC Climate Zone', d.climateZone || ''],
-      ['Building Code', d.buildingCode || ''],
-      ['Generated', new Date().toISOString()],
-      [],
-      ['=== COMPOSITE RISK ==='],
-      ['Composite Score', `${d.composite}/100`],
-      [],
-      ['=== HAZARD ASSESSMENT ==='],
-      ['Category', 'Score (0-10)'],
-    ];
-    Object.keys(RISK_LABELS).forEach(k => rows.push([RISK_LABELS[k], d.scores[k]]));
-    rows.push([], ['=== 7-DAY FORECAST ==='], ['Period', 'Temperature', 'Conditions']);
-    (d.forecast || []).forEach(f => rows.push([f.name, `${f.temperature}°${f.temperatureUnit}`, `"${f.shortForecast}"`]));
-    rows.push([], ['=== ACTIVE ALERTS ==='], ['Event', 'Severity', 'Headline']);
-    if (!d.alerts || !d.alerts.length) rows.push(['None', '', '']);
-    else d.alerts.forEach(a => rows.push([a.event, a.severity, `"${a.headline}"`]));
-    rows.push([], ['=== HISTORICAL EVENTS ==='], ['Year', 'Event', 'Severity', 'Note']);
-    (d.history?.events || []).forEach(e => rows.push([e.year, `"${e.event}"`, e.severity, `"${e.note}"`]));
-    rows.push([], ['=== CONSTRUCTION RECOMMENDATIONS ===']);
-    Object.keys(RISK_LABELS).forEach(k => {
-      if (d.scores[k] >= 3 && TIPS[k]) {
-        rows.push([`--- ${RISK_LABELS[k]} ---`]);
-        TIPS[k].forEach(t => rows.push([`"${t}"`]));
-      }
-    });
-
-    const csv = rows.map(r => r.join(',')).join('\n');
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `GAD_Report_${new Date().toISOString().slice(0, 10)}.csv`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-    toast('CSV report exported successfully', 'success');
-  }
-
-  async function downloadPDF() {
+  // Both export formats now go through POST /api/export?format=<fmt>.
+  // Server-side rendering keeps the PDF and CSV outputs in lock-step
+  // (same section ordering, same threshold for "active" hazards) and
+  // means the audit log and any future format additions only have to
+  // change in one place. See DESIGN.md §7.4.
+  async function downloadReport(fmt) {
+    const ext      = fmt === 'csv' ? 'csv' : 'pdf';
+    const mimeName = fmt === 'csv' ? 'CSV' : 'PDF';
     try {
-      const res = await fetch('/api/export', {
+      const res = await fetch(`/api/export?format=${encodeURIComponent(fmt)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(currentData),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
-        throw new Error(err.error || 'PDF generation failed');
+        throw new Error(err.error || `${mimeName} generation failed`);
       }
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `GAD_Report_${new Date().toISOString().slice(0, 10)}.pdf`;
+      a.download = `GAD_Report_${new Date().toISOString().slice(0, 10)}.${ext}`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
-      toast('PDF report exported successfully', 'success');
+      toast(`${mimeName} report exported successfully`, 'success');
     } catch (err) {
       toast(`Export failed: ${err.message}`, 'error', 5000);
     }
@@ -1008,7 +968,7 @@ document.addEventListener('DOMContentLoaded', () => {
               <th scope="row"><span aria-hidden="true">${RISK_ICONS[k]}</span> ${RISK_LABELS[k]}</th>
               ${arr.map(loc => {
                 const lvl = riskLevel(loc.scores[k]);
-                return `<td><span class="risk-pill" style="background:${lvl.color}20;color:${lvl.color}">${loc.scores[k]}/10</span></td>`;
+                return `<td><span class="risk-pill" style="background:${lvl.color}20;color:${lvl.color}">${fmtScore(loc.scores[k])}/10</span></td>`;
               }).join('')}
             </tr>
           `).join('')}
@@ -1052,6 +1012,15 @@ document.addEventListener('DOMContentLoaded', () => {
   updateOnlineStatus();
 
   /* ─── Utilities ───────────────────────────────────────────────────────── */
+  function fmtScore(s) {
+    // Hazard scores are floats once FEMA NRI data is in play (state-level
+    // fallback gives ints). Display to at most one decimal so the
+    // overview tiles don't blow out with FEMA's full-precision percentile
+    // values like 9.929078014183975.
+    if (s == null || isNaN(s)) return '—';
+    const rounded = Math.round(s * 10) / 10;
+    return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
+  }
   function escapeHtml(s) {
     return String(s ?? '').replace(/[&<>"']/g, c => ({
       '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
