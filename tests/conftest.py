@@ -132,6 +132,38 @@ def nws_alerts_payload():
 
 
 @pytest.fixture
+def usgs_epqs_payload():
+    """A representative response from the USGS Elevation Point Query Service.
+
+    Shape: `{"location": {...}, "value": 12.345, "rasterId": ...}` — we
+    only use `value` (in meters)."""
+    return {
+        "location": {"x": -82.4572, "y": 27.9506},
+        "value": 12.5,
+        "rasterId": 4444,
+    }
+
+
+@pytest.fixture
+def fema_nfhl_payload():
+    """A representative response from FEMA NFHL layer 28 (S_FLD_HAZ_AR).
+
+    Each `feature` carries `attributes` with at least `FLD_ZONE`. A real
+    response can carry many features (a point near a zone boundary may
+    fall in two polygons); the loader takes the first one."""
+    return {
+        "features": [
+            {
+                "attributes": {
+                    "FLD_ZONE": "AE",
+                    "ZONE_SUBTY": "FLOODWAY",
+                }
+            }
+        ]
+    }
+
+
+@pytest.fixture
 def export_payload():
     """A complete payload to POST to /api/export."""
     return {
