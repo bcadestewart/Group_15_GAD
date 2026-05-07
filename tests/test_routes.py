@@ -138,6 +138,164 @@ def test_weather_happy_path(
     assert 0 <= body["composite"] <= 100
 
 
+def test_weather_observation_shape(
+    client, mocker, fake_response,
+    nws_point_payload, nws_forecast_payload, nws_alerts_payload,
+):
+    """SRS §3.2 — the Overview tab renders a 'Current Conditions' card from
+    the `observation` field, so the shape of that field is part of the API
+    contract. The frontend reads four keys (temperature, temperatureUnit,
+    windSpeed, humidity, conditions); we lock all five so an upstream
+    schema change (or an accidental deletion of `temperatureUnit` like the
+    one closed in v1.12) doesn't quietly break the UI.
+    """
+    def _router(url, *args, **kwargs):
+        if "alerts/active" in url:
+            return fake_response(json_data=nws_alerts_payload)
+        if "forecast" in url:
+            return fake_response(json_data=nws_forecast_payload)
+        if "/points/" in url:
+            return fake_response(json_data=nws_point_payload)
+        return fake_response(json_data={}, ok=False, status_code=404)
+
+    mocker.patch("app.http.get", side_effect=_router)
+
+    res = client.get("/api/weather?lat=27.9506&lon=-82.4572")
+    assert res.status_code == 200
+    obs = res.get_json()["observation"]
+
+    assert set(obs.keys()) == {
+        "temperature", "temperatureUnit", "windSpeed", "humidity", "conditions",
+    }
+    assert obs["temperature"]     == 72
+    assert obs["temperatureUnit"] == "F"
+    assert obs["windSpeed"]       == "10 mph"
+    assert obs["conditions"]      == "Mostly Clear"
+    assert obs["humidity"]        == "N/A"
+
+
+def test_weather_observation_empty_when_no_forecast_periods(
+    client, mocker, fake_response,
+    nws_point_payload, nws_alerts_payload,
+):
+    """If NWS returns the points/alerts data but the forecast endpoint
+    yields zero periods, observation stays an empty dict. The frontend's
+    `renderObservation()` checks for this and suppresses the card rather
+    than rendering em-dashes for every field."""
+    def _router(url, *args, **kwargs):
+        if "alerts/active" in url:
+            return fake_response(json_data=nws_alerts_payload)
+        if "forecast" in url:
+            return fake_response(json_data={"properties": {"periods": []}})
+        if "/points/" in url:
+            return fake_response(json_data=nws_point_payload)
+        return fake_response(json_data={}, ok=False, status_code=404)
+
+    mocker.patch("app.http.get", side_effect=_router)
+
+    res = client.get("/api/weather?lat=27.9506&lon=-82.4572")
+    assert res.status_code == 200
+    assert res.get_json()["observation"] == {}
+
+
+def test_weather_includes_site_context_when_upstreams_succeed(
+    client, mocker, fake_response,
+    nws_point_payload, nws_forecast_payload, nws_alerts_payload,
+    usgs_epqs_payload, fema_nfhl_payload,
+):
+    """SRS §3.7 — when USGS EPQS and FEMA NFHL both respond, the
+    /api/weather payload carries an `elevation` object (`meters`+`feet`)
+    and a `floodZone` object (`zone`+`description`). Both are rendered
+    in the sidebar; missing values must arrive as `None` so the
+    frontend can suppress the row instead of showing 'N/A'."""
+    def _router(url, *args, **kwargs):
+        if "alerts/active" in url:
+            return fake_response(json_data=nws_alerts_payload)
+        if "epqs.nationalmap.gov" in url:
+            return fake_response(json_data=usgs_epqs_payload)
+        if "hazards.fema.gov" in url:
+            return fake_response(json_data=fema_nfhl_payload)
+        if "forecast" in url:
+            return fake_response(json_data=nws_forecast_payload)
+        if "/points/" in url:
+            return fake_response(json_data=nws_point_payload)
+        return fake_response(json_data={}, ok=False, status_code=404)
+
+    mocker.patch("app.http.get", side_effect=_router)
+
+    res = client.get("/api/weather?lat=27.9506&lon=-82.4572")
+    assert res.status_code == 200
+    body = res.get_json()
+
+    assert body["elevation"] == {"meters": 12.5, "feet": 41}
+    assert body["floodZone"]["zone"] == "AE"
+    assert "1% annual chance flood" in body["floodZone"]["description"]
+
+
+def test_weather_site_context_degrades_to_null_on_upstream_failure(
+    client, mocker, fake_response,
+    nws_point_payload, nws_forecast_payload, nws_alerts_payload,
+):
+    """SRS §3.7 — USGS or FEMA outages must not cascade into a 5xx for
+    the whole /api/weather call. Each helper returns `None` on failure
+    and the response simply ships `elevation: null` / `floodZone: null`,
+    which the frontend renders as a suppressed row."""
+    def _router(url, *args, **kwargs):
+        if "alerts/active" in url:
+            return fake_response(json_data=nws_alerts_payload)
+        if "epqs.nationalmap.gov" in url:
+            return fake_response(json_data={}, ok=False, status_code=503)
+        if "hazards.fema.gov" in url:
+            return fake_response(json_data={}, ok=False, status_code=503)
+        if "forecast" in url:
+            return fake_response(json_data=nws_forecast_payload)
+        if "/points/" in url:
+            return fake_response(json_data=nws_point_payload)
+        return fake_response(json_data={}, ok=False, status_code=404)
+
+    mocker.patch("app.http.get", side_effect=_router)
+
+    res = client.get("/api/weather?lat=27.9506&lon=-82.4572")
+    assert res.status_code == 200
+    body = res.get_json()
+    assert body["elevation"] is None
+    assert body["floodZone"] is None
+
+
+def test_weather_flood_zone_x_when_outside_sfha(
+    client, mocker, fake_response,
+    nws_point_payload, nws_forecast_payload, nws_alerts_payload,
+    usgs_epqs_payload,
+):
+    """When FEMA NFHL returns no overlapping flood-hazard polygon, the
+    point is inside coverage but outside any mapped SFHA — that's an
+    informative 'Zone X' answer, not a failure. The response should
+    surface zone='X' with the X description so the user sees 'minimal
+    flood hazard' rather than a missing row."""
+    def _router(url, *args, **kwargs):
+        if "alerts/active" in url:
+            return fake_response(json_data=nws_alerts_payload)
+        if "epqs.nationalmap.gov" in url:
+            return fake_response(json_data=usgs_epqs_payload)
+        if "hazards.fema.gov" in url:
+            return fake_response(json_data={"features": []})
+        if "forecast" in url:
+            return fake_response(json_data=nws_forecast_payload)
+        if "/points/" in url:
+            return fake_response(json_data=nws_point_payload)
+        return fake_response(json_data={}, ok=False, status_code=404)
+
+    mocker.patch("app.http.get", side_effect=_router)
+
+    res = client.get("/api/weather?lat=27.9506&lon=-82.4572")
+    assert res.status_code == 200
+    body = res.get_json()
+    assert body["floodZone"] == {
+        "zone": "X",
+        "description": "Minimal flood hazard (outside 1% annual chance floodplain)",
+    }
+
+
 def test_weather_non_us_returns_404(client, mocker, fake_response):
     """NWS only covers the US; non-US coords should yield a clean 404."""
     mocker.patch(
@@ -186,7 +344,6 @@ def test_history_every_curated_event_has_wiki_url(client):
     from db import get_session
     from db.models import HistoricalEvent
     from sqlalchemy import select
-
     with get_session() as db:
         events = db.scalars(select(HistoricalEvent)).all()
     assert len(events) >= 51, f"expected ≥51 events, got {len(events)}"
@@ -204,7 +361,6 @@ def test_history_covers_all_us_states_and_dc():
     from db import get_session
     from db.models import DecadalTrend, HistoricalEvent, State
     from sqlalchemy import func, select
-
     with get_session() as db:
         state_count = db.scalar(select(func.count()).select_from(State))
         states_with_events = set(db.scalars(
@@ -214,7 +370,6 @@ def test_history_covers_all_us_states_and_dc():
             select(DecadalTrend.state_code).distinct()
         ).all())
         all_states = set(db.scalars(select(State.code)).all())
-
     assert state_count == 51, f"expected 51 states (50 + DC), got {state_count}"
     assert states_with_events == all_states, \
         f"states without events: {all_states - states_with_events}"
@@ -256,7 +411,6 @@ def _purge_analyses():
     from db import get_session
     from db.models import Analysis
     from sqlalchemy import delete
-
     with get_session() as db:
         db.execute(delete(Analysis))
         db.commit()
@@ -271,7 +425,6 @@ def test_weather_happy_path_writes_an_analysis_row(
     from db import get_session
     from db.models import Analysis
     from sqlalchemy import func, select
-
     _purge_analyses()
 
     def _router(url, *args, **kwargs):
@@ -293,7 +446,6 @@ def test_weather_happy_path_writes_an_analysis_row(
         latest = db.scalars(
             select(Analysis).order_by(Analysis.created_at.desc()).limit(1)
         ).first()
-
     assert count == 1
     assert latest is not None
     assert latest.lat == 27.9506
@@ -319,6 +471,7 @@ def test_analysis_write_failure_does_not_break_weather(
         return fake_response(json_data={}, ok=False, status_code=404)
 
     mocker.patch("app.http.get", side_effect=_router)
+
     # Stub _record_analysis to raise — the route should still return 200.
     mocker.patch("app._record_analysis", side_effect=RuntimeError("DB down"))
 
@@ -614,7 +767,6 @@ def test_weather_returns_nri_county_data_when_zone_id_resolves(
     res = client.get("/api/weather?lat=27.9506&lon=-82.4572")
     assert res.status_code == 200
     body = res.get_json()
-
     # Hillsborough, FL is in our sample CSV — county_name + NRI source
     # should both be populated.
     assert body["countyName"] == "Hillsborough"
@@ -654,7 +806,6 @@ def test_weather_falls_back_to_state_when_no_nri_match(
     res = client.get("/api/weather?lat=27.9506&lon=-82.4572")
     assert res.status_code == 200
     body = res.get_json()
-
     assert body["countyName"] is None
     assert body["riskSource"] == "state-level baseline"
     # State-level FL profile has hurricane=9 — still high after jitter.
@@ -665,7 +816,6 @@ def test_nri_loader_parses_sample_csv():
     """Direct test of the NRI loader against the sample CSV bundled in
     the repo. Verifies score normalization (FEMA 0-100 → our 0-10),
     zone-id construction, and the Coastal/Riverine flood max."""
-
     from db import get_session
     from db.models import NRICounty
     from sqlalchemy import select
@@ -756,7 +906,6 @@ def test_retry_session_recovers_from_one_transient_503(client, mocker):
     has the retry adapter mounted with the expected policy, so the
     behavior is configured correctly."""
     import app as gad_app
-
     adapter = gad_app.http.get_adapter("https://api.weather.gov/")
     retry = adapter.max_retries
     assert retry.total == 2
