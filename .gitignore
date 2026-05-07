@@ -30,3 +30,5 @@ backend/gad.db-shm
 # Both filenames the loader recognizes are excluded.
 backend/data/nri_counties.csv
 backend/data/NRI_Table_Counties.csv
+backend/data/*.pdf
+backend/data/*.xlsx

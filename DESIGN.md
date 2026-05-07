@@ -4,8 +4,8 @@
 | ---------------- | -------------------------------------------------- |
 | Project          | Geospatial Architecture Database (GAD)             |
 | Course           | CS 4398 — Software Engineering, Group 15           |
-| Document version | 1.10                                               |
-| Last updated     | 2026-05-01                                         |
+| Document version | 1.11                                               |
+| Last updated     | 2026-05-07                                         |
 | Status           | Living document — update with relevant code changes |
 | Companion docs   | [README.md](./README.md), [Group15SRS.html](./Group15SRS.html) |
 
@@ -36,7 +36,7 @@ The intended audience is the development team (Group 15), the course instructor 
 
 ## 3. System overview
 
-GAD is a single-page web application backed by a thin Flask service. The browser handles all rendering, mapping, charting, and CSV export; the backend acts as a proxy for third-party APIs (NWS, OSM Nominatim), runs the risk-scoring algorithm, joins in static reference tables, and renders PDF reports.
+GAD is a single-page web application backed by a thin Flask service. The browser handles all rendering, mapping, and charting; the backend acts as a proxy for third-party APIs (NWS, OSM Nominatim), runs the risk-scoring algorithm, joins in static reference tables, and renders PDF and CSV reports.
 
 **Design goals** (derived from SRS Part 4):
 - **Reliability** — round-trip under 5 s for a single location lookup (SRS §4.1).
@@ -62,7 +62,7 @@ flowchart LR
         ROUTES["Route handlers<br/>/api/search · /api/weather<br/>/api/history · /api/export"]
         RISK["Risk engine<br/>weighted composite + jitter"]
         TABLES["Static tables<br/>STATE_PROFILES · IECC_ZONES<br/>BUILDING_CODES · HISTORICAL_EVENTS"]
-        PDF["reportlab<br/>PDF generator"]
+        PDF["Report rendering<br/>PDF (reportlab) + CSV"]
     end
 
     subgraph External["Third-party services"]
@@ -94,7 +94,7 @@ The backend keeps no state between requests; every API call is independent. Rece
 | File                      | Responsibility                                                                                              |
 | ------------------------- | ----------------------------------------------------------------------------------------------------------- |
 | `frontend/index.html`     | Page skeleton, ARIA landmarks, tab structure, export modal, comparison panel, offline banner.               |
-| `frontend/app.js`         | App bootstrap, Leaflet init, debounced search, suggestion list with keyboard nav, recent-searches store, `/api/*` calls, tab routing, Chart.js render, CSV export, comparison state. |
+| `frontend/app.js`         | App bootstrap, Leaflet init, debounced search, suggestion list with keyboard nav, recent-searches store, `/api/*` calls, tab routing, Chart.js render, export download trigger (PDF and CSV both fetch from `/api/export`), comparison state. |
 | `frontend/styles.css`     | Glass-morphism theme, responsive grid, focus rings, color tokens, motion-safe animations.                   |
 
 External libraries (loaded via CDN, not bundled): Leaflet 1.9.4, Chart.js 4.4.1, Inter & JetBrains Mono fonts (Google Fonts).
@@ -177,7 +177,7 @@ sequenceDiagram
     UI->>UI: render Overview, Forecast, Alerts,<br/>Risk Score, Build Tips tabs
 ```
 
-The history tab is fetched on demand via `GET /api/history?state=XX`. Export flows post the assembled site object back to the server, which composes a styled PDF and streams it back as `application/pdf`.
+The history tab is fetched on demand via `GET /api/history?state=XX`. Export flows post the assembled site object back to the server, which composes a styled PDF (`application/pdf`) or CSV (`text/csv`) — selected by the `?format=` query parameter — and streams it back as an attachment.
 
 ---
 
@@ -222,10 +222,13 @@ Notable disasters and decadal hazard-event count for a state.
 
 ### 7.4 `POST /api/export`
 
-Body: the assembled site object from the client. Generates a multi-page styled PDF (cover summary, hazard table, recommendations, optional 7-day forecast, disclaimer).
+Body: the assembled site object from the client. Generates a styled site report — a multi-page PDF (cover summary, hazard table, recommendations, optional 7-day forecast, disclaimer) or a sectioned CSV with the same content.
 
-- **Returns:** `application/pdf` with `Content-Disposition: attachment; filename=GAD_Report_YYYYMMDD.pdf`.
-- **Errors:** 500 if reportlab is not installed.
+- **Format selection:** `?format=pdf` (default, backward-compatible) or `?format=csv`. The `format` key may also live in the JSON body for callers that prefer not to use a query string.
+- **Returns:**
+  - PDF: `application/pdf` with `Content-Disposition: attachment; filename=GAD_Report_YYYYMMDD.pdf`.
+  - CSV: `text/csv` with `Content-Disposition: attachment; filename=GAD_Report_YYYYMMDD.csv`. Section banners (`=== HAZARD ASSESSMENT ===`, etc.) mirror the PDF order. Quoting is delegated to the stdlib `csv.writer`, so display names and headlines containing commas or quotes are escaped correctly.
+- **Errors:** 400 for an unknown `format` value, 500 if reportlab is not installed and `format=pdf` is requested. CSV has no extra dependency, so it is unaffected by missing reportlab.
 
 ### 7.5 `GET /api/health`
 
@@ -389,15 +392,17 @@ Score normalization: FEMA publishes per-hazard scores on a 0–100 percentile sc
 
 Hazard mapping from FEMA's 18 NRI categories to our 7:
 
-| Our hazard | FEMA columns                  | Aggregation |
-| ---------- | ----------------------------- | ----------- |
-| hurricane  | HRCN_RISKS                    | passthrough |
-| tornado    | TRND_RISKS                    | passthrough |
-| flood      | CFLD_RISKS, RFLD_RISKS        | max         |
-| winter     | WNTW_RISKS, ISTM_RISKS, CWAV_RISKS | max    |
-| heat       | HWAV_RISKS                    | passthrough |
-| seismic    | EQKE_RISKS                    | passthrough |
-| wildfire   | WFIR_RISKS                    | passthrough |
+| Our hazard | FEMA columns                       | Aggregation |
+| ---------- | ---------------------------------- | ----------- |
+| hurricane  | HRCN_RISKS                         | passthrough |
+| tornado    | TRND_RISKS                         | passthrough |
+| flood      | CFLD_RISKS, IFLD_RISKS             | max         |
+| winter     | WNTW_RISKS, ISTM_RISKS, CWAV_RISKS | max         |
+| heat       | HWAV_RISKS                         | passthrough |
+| seismic    | ERQK_RISKS                         | passthrough |
+| wildfire   | WFIR_RISKS                         | passthrough |
+
+(Earlier versions of this loader used `RFLD_RISKS` and `EQKE_RISKS`, which don't exist in any FEMA NRI release — `IFLD_RISKS` is FEMA's actual code for inland flooding and `ERQK_RISKS` for earthquake. The wrong names silently parsed as zero, so flood was undercounted and seismic was always zero. `tests/test_routes.py::test_nri_loader_uses_correct_fema_column_names` pins the column names against regression.)
 
 `/api/weather` extracts `nws_zone_id` from the NWS points response (URL like `/zones/county/FLC057` → `FLC057`) and queries `nri_counties` by that key. On hit, the response includes `countyName` and `riskSource: "FEMA National Risk Index"`. On miss, falls back to the State row and labels `riskSource: "state-level baseline"` so the UI can show appropriate attribution.
 
@@ -543,9 +548,9 @@ The `pause and retry` flow described in SRS §3.5.2 is implemented via the toast
 | §3.1.1 UC1: display requested location | Render input on map                        | Map click handler + `/api/search` autocomplete.                                       |
 | §3.1.2 UC2: cannot resolve location   | Show error                                   | `/api/search` returns 503 / empty; toast + suggestions hidden.                        |
 | §3.2 Weather Data Retrieval/Analysis  | Pull NWS data                                | `/api/weather` proxies NWS point/forecast/alerts.                                     |
-| §3.3 Data Export                      | PDF / CSV export                             | `/api/export` → reportlab; CSV via `app.js` `Blob` download.                          |
-| §3.3.1 UC1: recommendations export    | Construction tips → file                     | PDF "Construction Recommendations" page; CSV `tips` rows.                             |
-| §3.3.2 UC2: weather history export    | Forecast + history → file                    | PDF "7-Day Forecast" table; CSV `forecast` and `history` rows.                        |
+| §3.3 Data Export                      | PDF / CSV export                             | `/api/export?format=pdf\|csv` — PDF via reportlab, CSV via stdlib `csv.writer`. Both server-side. |
+| §3.3.1 UC1: recommendations export    | Construction tips → file                     | "Construction Recommendations" section in both PDF and CSV outputs (same `score >= 3` threshold). |
+| §3.3.2 UC2: weather history export    | Forecast + history → file                    | "7-Day Forecast" + optional "Historical Events" sections in both PDF and CSV outputs. |
 | §3.4 Risk + recommendations           | Compute score, list recs                     | `composite_from_scores`, `RISK_CATEGORIES`, `CONSTRUCTION_TIPS`. County-level scores from FEMA NRI (`nri_counties` table; see §8.7) when the NWS county zone id resolves; state-level fallback otherwise. |
 | §3.5.1 UC1: failure to find address   | Error message + retry                        | `/api/search` 503 + frontend toast; user remains on input.                            |
 | §3.5.2 UC2: no internet               | Notify and pause                             | `online`/`offline` browser events drive `#offlineBanner`.                             |
@@ -633,3 +638,4 @@ Branch protection on `main` should require both matrix legs (Python 3.10 and 3.1
 | 2026-05-01 | Brandon Stewart | v1.8 — Analytics & audit log (SRS §3.6). New `Analysis` model + `analyses` table (id, created_at indexed, lat, lon, state indexed nullable, composite, alert_count). Migration `0002_add_analyses_table` generated via autogenerate. `app._record_analysis()` writes one row after every `/api/weather` response with explicit best-effort try/except — tests verify a `Session.commit` failure produces no user-facing 5xx. Two new read endpoints: `GET /api/analyses/recent` (paginated, limit≤100) and `GET /api/analyses/stats` (totals + 24h count + by_state + by_day for the last 14 days). Suite expanded from 52 → 60 tests. New §7.6/§7.7 endpoint specs, §8 ER diagram includes `analyses`, new §8.6 documents the privacy posture and best-effort-write contract, §13 traceability rows for §3.6/§3.6.1/§3.6.2, §15 future work names an admin UI on top of these endpoints. SRS amendment in this same PR adds the §3.6 section and a TOC entry; SRS revision-history block notes the addition. |
 | 2026-05-01 | Brandon Stewart | v1.9 — Weather-pipeline resilience (response to a real upstream-timeout incident reported on 2026-05-01 from Kansas-area clicks). New `backend/http_session.py` mounts a `urllib3` `Retry` adapter (total=2, backoff_factor=0.5, status_forcelist=(502,503,504)) on a shared `requests.Session`; all outbound calls in `app.py` migrated from `requests.get(...)` to `http.get(...)`. New `backend/cache.py` provides a thread-safe `TTLCache` (OrderedDict + Lock, LRU eviction, hit/miss counters); `/api/weather` now caches responses for 5 minutes keyed by `(round(lat,3), round(lon,3))` (~110m cell). Cache hits still write an Analysis row so the audit log remains accurate. New `GET /api/cache/stats` endpoint surfaces the cache hit-rate. Suite expanded 60 → 66 tests (cache miss-then-hit, nearby-coords-share-cell, TTL expiry via `time.monotonic` patch, `/api/cache/stats` shape + counters, retry adapter policy assertion). New conftest autouse fixture clears the cache between tests so ordering is irrelevant. New §5.2 module table includes `http_session.py` and `cache.py`; new §7.8 documents `/api/cache/stats`; §12 + §13 NFR/traceability rows for §4.1 cite both retries and caching; §15 drops the standalone "caching" item and adds two new items (distributed cache, parallel upstream calls). |
 | 2026-05-01 | Brandon Stewart | v1.10 — FEMA National Risk Index integration. New `NRICounty` model + migration `0003_add_nri_counties_table` (county_fips PK, nws_zone_id indexed, state_code indexed, county_name, population, risk_score 0-100, risk_rating, plus 7 normalized 0-10 hazard scores). New `backend/db/nri_loader.py` parses FEMA's published CSV schema (STATEFIPS, COUNTYFIPS, HRCN_RISKS, etc.), normalizes 0-100 → 0-10, computes derived categories (flood = max(CFLD, RFLD); winter = max(WNTW, ISTM, CWAV)). 15-county sample committed at `backend/data/nri_sample.csv`; full ~3,200-county FEMA download is gitignored at `nri_counties.csv` and pulled via the curl command documented in README. `/api/weather` extracts the NWS county zone id from the points response and prefers NRI county scores when found, falling back to the existing `State`-level profile otherwise. Response gains `countyName` + `riskSource` fields. Frontend shows the county name in the location card and a "Source: FEMA National Risk Index" attribution under the composite-risk dial. Suite expanded 66 → 69 tests (NRI county hit, state-level fallback when the zone id is unknown, loader normalization sanity). New §5.3 entries for `nri_loader.py` + `nri_sample.csv`; §8 ER diagram includes `nri_counties`; new §8.7 documents the score normalization and FEMA → GAD hazard mapping; §10.2 lists FEMA NRI as a data source; §13 traceability for §3.4 cites the county-level upgrade; §15 drops authoritative-FEMA-data from future work and adds NRI refresh automation as the next increment. No SRS amendment needed — this strengthens §3.4 implementation without changing the contract. |
+| 2026-05-07 | Brandon Stewart | v1.11 — SRS §3.3 closeout: server-side CSV export. `POST /api/export` now dispatches on a `format` query/body parameter (`pdf` default for backward compatibility, `csv` new); the prior PDF body is factored into `_export_pdf(data)` and a new `_export_csv(data)` renders the same sections via the stdlib `csv.writer` (proper quoting for display names and headlines that embed commas or quotes — the previous client-side hand-rolled quoting broke on `"Tampa, FL"`). Frontend `downloadCSV()` removed; both formats now flow through a unified `downloadReport(fmt)` that POSTs to `/api/export?format=…`. Suite expanded 72 → 79 tests (CSV happy path, format-via-body, minimal payload, embedded-comma quoting, no-alerts fallback row, unknown-format → 400, default-format-is-pdf backward-compat). §7.4 endpoint spec rewritten to cover both formats; §3 + §4 + §5.1 + §6 references to "CSV export" updated to reflect server-side rendering; §13 traceability rows for §3.3/§3.3.1/§3.3.2 updated. README API table gains the three audit/cache endpoints (§3.6 / §4.1) that were already implemented but missing from the README listing. No SRS amendment needed — this implements an SRS-mandated format that had been satisfied client-side; the contract is unchanged. |
