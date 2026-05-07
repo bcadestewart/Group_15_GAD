@@ -30,19 +30,38 @@ A comparison panel lets the user save up to 3 sites side-by-side, and recent sea
 - Internet connection (the app calls live NWS and Nominatim APIs)
 
 ### Install and run
+
+The setup is the same on every platform — clone the repo, create a virtual environment, install dependencies, run the app — but the **commands** differ between macOS/Linux and Windows. Pick the block for your OS and run the lines one at a time. After `activate`, your shell prompt should start with `(.venv)` — that's the signal you're working inside the project's isolated environment.
+
+#### macOS / Linux
+
 ```bash
 git clone https://github.com/bcadestewart/Group_15_GAD.git
 cd Group_15_GAD
 
-# Optional but recommended: virtual environment
 python3 -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
+source .venv/bin/activate
 
 pip install -r backend/requirements.txt
 python3 backend/app.py
 ```
 
-The server boots on **http://localhost:5001** by default. Port 5001 (not the Flask default 5000) avoids a collision with macOS AirPlay Receiver. Override with `PORT=8000 python3 backend/app.py` if you need a different port.
+#### Windows (PowerShell or `cmd`)
+
+```cmd
+git clone https://github.com/bcadestewart/Group_15_GAD.git
+cd Group_15_GAD
+
+py -m venv .venv
+.venv\Scripts\activate
+
+py -m pip install -r backend\requirements.txt
+py backend\app.py
+```
+
+> **Windows note:** use the `py` launcher (ships with the official Python installer) and `python -m pip` (or `py -m pip`) rather than bare `python` / `pip`. This avoids the very common "pip and python point to different installs" trap on Windows. If `py` isn't recognized, re-run the Python installer, click **Modify**, and tick **py launcher** + **Add Python to environment variables**.
+
+The server boots on **http://localhost:5001** by default. Port 5001 (not Flask's default 5000) avoids a collision with macOS AirPlay Receiver. Override with `PORT=8000 python3 backend/app.py` (macOS/Linux) or `set PORT=8000 && py backend\app.py` (Windows `cmd`).
 
 ---
 
