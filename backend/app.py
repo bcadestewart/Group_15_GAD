@@ -187,6 +187,143 @@ def _record_analysis(lat, lon, state, composite, alert_count):
         pass
 
 
+# ─── Site context helpers (SRS §3.7) ────────────────────────────────────────
+#
+# Two best-effort upstream lookups that enrich the /api/weather response
+# with engineering inputs architects use for site siting:
+#
+#   * Ground elevation via the USGS Elevation Point Query Service (EPQS).
+#   * FEMA Special Flood Hazard Area designation via the National Flood
+#     Hazard Layer (NFHL) ArcGIS REST service.
+#
+# Both calls use a tighter timeout than NWS (5s vs the default 8s) — these
+# values change on a decadal scale, so users will overwhelmingly see them
+# served from the /api/weather TTL cache. A miss that drags out only adds
+# latency to the *first* click on a new lat/lon cell. Both helpers return
+# `None` on any failure mode (HTTP error, parse error, upstream missing
+# coverage), and the route renders that as suppressed sidebar rows on the
+# frontend rather than empty cards.
+
+SITE_CONTEXT_TIMEOUT_SECONDS = 5
+
+# FEMA flood-zone code → human description. The codes come from FEMA's
+# NFHL data dictionary; we surface the architect-facing meaning rather
+# than make the user look up the letter. Anything not in this map falls
+# through to a generic "Flood zone {code}" string.
+_FLOOD_ZONE_DESCRIPTIONS = {
+    "A":   "1% annual chance flood (no Base Flood Elevation determined)",
+    "AE":  "1% annual chance flood with established Base Flood Elevation",
+    "AH":  "1% annual chance shallow flooding (1–3 ft, areas of ponding)",
+    "AO":  "1% annual chance shallow flooding (sheet flow on sloping terrain)",
+    "AR":  "Areas with temporarily increased flood risk during levee restoration",
+    "A99": "1% annual chance area protected by federal flood-control system under construction",
+    "V":   "Coastal high-hazard area (no Base Flood Elevation determined)",
+    "VE":  "Coastal high-hazard area — 1% annual chance with wave action",
+    "X":   "Minimal flood hazard (outside 1% annual chance floodplain)",
+    "D":   "Possible but undetermined flood hazard",
+}
+
+
+def get_elevation_meters(lat, lon):
+    """Return ground elevation in meters via the USGS EPQS, or `None`.
+
+    Public API, no auth required:
+        https://epqs.nationalmap.gov/v1/json?x=…&y=…&units=Meters
+
+    Returns a float (meters above sea level) on success. Returns `None`
+    for any failure mode — network error, non-OK status, malformed
+    response, lat/lon outside the EPQS coverage area (continental US +
+    territories). Caller treats `None` as "no data, skip the row."
+    """
+    try:
+        res = http.get(
+            "https://epqs.nationalmap.gov/v1/json",
+            params={
+                "x": lon,
+                "y": lat,
+                "units": "Meters",
+                "wkid": "4326",
+                "includeDate": "False",
+            },
+            timeout=SITE_CONTEXT_TIMEOUT_SECONDS,
+        )
+        if not res.ok:
+            return None
+        value = res.json().get("value")
+        if value is None:
+            return None
+        # USGS sometimes returns the numeric value as a string. Coerce.
+        return float(value)
+    except (requests.exceptions.RequestException, ValueError, TypeError):
+        return None
+
+
+def get_flood_zone(lat, lon):
+    """Return FEMA NFHL flood-zone info for a lat/lon, or `None`.
+
+    Queries layer 28 (`S_FLD_HAZ_AR`) of the NFHL public ArcGIS REST
+    service. The layer's polygons cover the Special Flood Hazard Areas
+    (Zones A, AE, V, etc.) plus the surrounding "outside the SFHA" zone
+    (X). Returns:
+
+        {"zone": "AE", "description": "1% annual chance flood ..."}
+
+    on success. Returns `None` on any failure (network, parse, etc.).
+    Returns `{"zone": "X", "description": "Minimal flood hazard …"}`
+    when the point falls inside NFHL coverage but outside any mapped
+    flood zone — that's an *informative* answer, not a failure.
+    """
+    try:
+        res = http.get(
+            "https://hazards.fema.gov/gis/nfhl/rest/services/public/NFHL/MapServer/28/query",
+            params={
+                "where": "1=1",
+                "geometry": f"{lon},{lat}",
+                "geometryType": "esriGeometryPoint",
+                "inSR": "4326",
+                "outFields": "FLD_ZONE,ZONE_SUBTY",
+                "returnGeometry": "false",
+                "f": "json",
+            },
+            timeout=SITE_CONTEXT_TIMEOUT_SECONDS,
+        )
+        if not res.ok:
+            return None
+        features = (res.json() or {}).get("features", [])
+        if not features:
+            # Inside NFHL coverage but no SFHA polygon overlaps — safe.
+            return {
+                "zone": "X",
+                "description": _FLOOD_ZONE_DESCRIPTIONS["X"],
+            }
+        attrs = features[0].get("attributes", {}) or {}
+        zone = (attrs.get("FLD_ZONE") or "").strip()
+        if not zone:
+            return None
+        return {
+            "zone": zone,
+            "description": _FLOOD_ZONE_DESCRIPTIONS.get(
+                zone.upper(),
+                f"Flood zone {zone}",
+            ),
+        }
+    except (requests.exceptions.RequestException, ValueError, TypeError):
+        return None
+
+
+def _build_elevation_payload(lat, lon):
+    """Wrap the bare meters value in the `{meters, feet}` shape the
+    frontend expects. Returns `None` if elevation is unavailable so the
+    frontend can suppress the row."""
+    meters = get_elevation_meters(lat, lon)
+    if meters is None:
+        return None
+    return {
+        "meters": round(meters, 1),
+        "feet":   round(meters * 3.28084),
+    }
+
+
 # ═══════════════ ROUTES ═════════════════════════════════════════════════════
 
 @app.route('/')
@@ -285,11 +422,17 @@ def weather():
                     'shortForecast': p['shortForecast']
                 } for p in periods[:14]]
                 if periods:
+                    # The Overview tab renders this as the "Current
+                    # conditions" card (SRS §3.2). NWS forecast periods
+                    # don't carry humidity, so we surface 'N/A' for that
+                    # field rather than omit it — keeps the response
+                    # shape stable for clients that always read all four.
                     obs = {
-                        'temperature': periods[0]['temperature'],
-                        'windSpeed': periods[0]['windSpeed'],
-                        'humidity': 'N/A',
-                        'conditions': periods[0]['shortForecast']
+                        'temperature':     periods[0]['temperature'],
+                        'temperatureUnit': periods[0].get('temperatureUnit', 'F'),
+                        'windSpeed':       periods[0]['windSpeed'],
+                        'humidity':        'N/A',
+                        'conditions':      periods[0]['shortForecast'],
                     }
 
         # Active alerts
@@ -346,6 +489,12 @@ def weather():
                   for k in RISK_CATEGORIES}
         composite = composite_from_scores(scores)
 
+        # Site-context lookups (SRS §3.7) — best-effort. Each returns
+        # None on any failure, which the frontend renders as a
+        # suppressed sidebar row rather than a broken card.
+        elevation = _build_elevation_payload(lat, lon)
+        flood_zone = get_flood_zone(lat, lon)
+
         response_payload = {
             'forecast':    forecasts,
             'alerts':      alerts,
@@ -357,6 +506,8 @@ def weather():
             'buildingCode': building_code_label,
             'countyName':  county_name,
             'riskSource':  risk_source,
+            'elevation':   elevation,
+            'floodZone':   flood_zone,
         }
 
         # Cache the response for the next ~5 minutes so repeat clicks

@@ -11,7 +11,8 @@ A web-based decision-support tool that takes a US location and returns a multi-h
 Given a search query (address, city, or coordinates) or a click on the map, GAD will:
 
 1. **Geocode** the input via the OpenStreetMap Nominatim API.
-2. **Pull live weather data** from the US National Weather Service: current observation, 7-day forecast, and active alerts.
+2. **Pull live weather data** from the US National Weather Service: current observation (rendered on the Overview tab as a Current Conditions card), 7-day forecast, and active alerts.
+3. **Look up site context** for engineering inputs: ground elevation via the USGS Elevation Point Query Service and the FEMA flood-zone designation (Zone A, AE, VE, X, etc.) via the National Flood Hazard Layer.
 3. **Compute a multi-hazard risk score** — hurricane, tornado, flood, winter storm, extreme heat, seismic, and wildfire — blended into a 0–100 composite.
 4. **Surface the locally adopted building code** (IBC year per state) and **IECC climate zone**.
 5. **Recommend construction practices** keyed to the dominant hazards (e.g. hurricane straps, FEMA P-320 safe room, frost-protected shallow foundation).

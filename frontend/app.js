@@ -554,6 +554,8 @@ document.addEventListener('DOMContentLoaded', () => {
         <p class="section-label">Site Metadata</p>
         <div class="meta-row"><span>IECC Climate Zone</span><strong>${escapeHtml(d.climateZone || 'N/A')}</strong></div>
         <div class="meta-row"><span>Building Code</span><strong>${escapeHtml(d.buildingCode || 'N/A')}</strong></div>
+        ${renderElevationRow(d.elevation)}
+        ${renderFloodZoneRow(d.floodZone)}
       </div>
 
       <button id="addToCompareBtn" class="btn-secondary">⇄ Add to Compare</button>
@@ -576,6 +578,28 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
+  /* Site Metadata sidebar rows for elevation + FEMA flood zone (SRS §3.7).
+     Both upstream calls are best-effort on the backend; when either is
+     unavailable for a coordinate (USGS coverage is 50-state + territories
+     but not pinpoint everywhere; FEMA NFHL has gaps in some rural areas)
+     the field arrives as null and we render no row at all rather than
+     "N/A" — keeps the sidebar clean instead of advertising missing data. */
+  function renderElevationRow(elev) {
+    if (!elev || elev.meters === undefined || elev.meters === null) return '';
+    return `<div class="meta-row"><span>Elevation</span>` +
+           `<strong>${escapeHtml(String(elev.feet))} ft ` +
+           `<span class="meta-aux">(${escapeHtml(String(elev.meters))} m)</span></strong></div>`;
+  }
+  function renderFloodZoneRow(fz) {
+    if (!fz || !fz.zone) return '';
+    const desc = fz.description || '';
+    return `<div class="meta-row meta-row-stacked">` +
+           `<span>FEMA Flood Zone</span>` +
+           `<strong title="${escapeHtml(desc)}">${escapeHtml(fz.zone)}</strong>` +
+           (desc ? `<p class="meta-detail">${escapeHtml(desc)}</p>` : '') +
+           `</div>`;
+  }
+
   function renderOverview(d) {
     const { composite } = d;
     const compLevel = riskLevel(composite, true);
@@ -587,6 +611,8 @@ document.addEventListener('DOMContentLoaded', () => {
     $('overview').innerHTML = `
       <h3 class="panel-title">Site Summary</h3>
       <p class="panel-text">Analysis for <strong>${escapeHtml(d.display)}</strong>. ${summary}</p>
+      ${renderObservation(d.observation)}
+      <h4 class="panel-subtitle">Hazard Snapshot</h4>
       <div class="overview-grid">
         ${Object.keys(RISK_LABELS).map(k => `
           <div class="overview-card">
@@ -599,6 +625,45 @@ document.addEventListener('DOMContentLoaded', () => {
             </p>
             <p class="overview-num">${fmtScore(d.scores[k])}/10</p>
           </div>`).join('')}
+      </div>
+    `;
+  }
+
+  /* Current conditions card (SRS §3.2). The backend always ships an
+     `observation` object on a successful /api/weather call, but its
+     fields can be empty strings if NWS returned no forecast periods —
+     in that case we suppress the entire card rather than render a row
+     of em-dashes that adds no information. */
+  function renderObservation(obs) {
+    if (!obs || (obs.temperature === undefined && !obs.conditions)) return '';
+
+    const tempUnit = obs.temperatureUnit || 'F';
+    const tempStr  = (obs.temperature === undefined || obs.temperature === null || obs.temperature === '')
+      ? '—'
+      : `${obs.temperature}°${tempUnit}`;
+    const wind     = obs.windSpeed   || '—';
+    const humidity = obs.humidity    || '—';
+    const cond     = obs.conditions  || '—';
+
+    return `
+      <h4 class="panel-subtitle">Current Conditions</h4>
+      <div class="conditions-grid" role="group" aria-label="Current weather conditions">
+        <div class="condition-card">
+          <p class="condition-label">Temperature</p>
+          <p class="condition-value">${escapeHtml(String(tempStr))}</p>
+        </div>
+        <div class="condition-card">
+          <p class="condition-label">Conditions</p>
+          <p class="condition-value">${escapeHtml(cond)}</p>
+        </div>
+        <div class="condition-card">
+          <p class="condition-label">Wind</p>
+          <p class="condition-value">${escapeHtml(wind)}</p>
+        </div>
+        <div class="condition-card">
+          <p class="condition-label">Humidity</p>
+          <p class="condition-value">${escapeHtml(humidity)}</p>
+        </div>
       </div>
     `;
   }
